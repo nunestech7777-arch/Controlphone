@@ -8,7 +8,7 @@ import { store } from '../lib/store';
 import { hexToRgbString, resolveThemeColors } from '../lib/tenantSetup';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { loadRealIdentity, translateAuthError } from '../lib/realSession';
-import { syncOnFocus, syncTenantRecords } from '../lib/realData';
+import { syncOnFocus, syncTenantRecords, watchTenantRecords } from '../lib/realData';
 import { LoginPage } from '../pages/auth/LoginPage';
 
 const DEMO_USER_ID = 'user-admin-01';
@@ -166,18 +166,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         pdf_header_style: 'standard'
       });
 
-  // Clientes e fornecedores vêm do banco: carrega ao entrar na loja e de novo ao voltar para a aba do sistema
+  // Clientes, fornecedores e estoque vêm do banco: carrega ao entrar na loja, ao voltar para a aba
+  // do sistema e sempre que outro aparelho da loja alterar algo
   const isRealSession = status === 'ready' && !isDemoMode && isSupabaseConfigured;
   useEffect(() => {
     if (!isRealSession || !effectiveTenantId) return;
     const role: UserRole = isSupportMode ? 'super_admin' : currentUser.role;
     void syncTenantRecords(effectiveTenantId, role);
+    const stopWatching = watchTenantRecords(effectiveTenantId, role);
     const onFocus = () => syncOnFocus(effectiveTenantId, role);
     const onVisible = () => { if (document.visibilityState === 'visible') onFocus(); };
     window.addEventListener('focus', onFocus);
     window.addEventListener('online', onFocus);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
+      stopWatching();
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('online', onFocus);
       document.removeEventListener('visibilitychange', onVisible);

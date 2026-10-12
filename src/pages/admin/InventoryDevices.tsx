@@ -4,7 +4,7 @@
 
 import React, { useState } from 'react';
 import { Smartphone, Plus, Search, Battery, Eye, Pencil, X, ArrowUp, ArrowDown, ArrowUpDown, Wrench, DollarSign } from 'lucide-react';
-import { store, normalizeImei, isValidImei, IMEI_HINT } from '../../lib/store';
+import { store, normalizeImei, isValidImei, newUuid, IMEI_HINT } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Device } from '../../types';
 import { MetricCard } from '../../components/shared/MetricCard';
@@ -182,7 +182,7 @@ export const InventoryDevices: React.FC = () => {
     } else {
       saved = {
         ...formData,
-        id: 'dev-' + Date.now(),
+        id: newUuid(),
         tenant_id: tenantId,
         origin: 'purchase',
         accumulated_repair_cost: 0,

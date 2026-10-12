@@ -6,7 +6,7 @@
 // ============================================================================
 
 import { supabase } from './supabase';
-import { Customer, Supplier, Tenant, TenantDocument, TenantDocumentType, TenantSettings, TenantTheme } from '../types';
+import { Accessory, Customer, Device, Gift, Supplier, SupplierPurchase, Tenant, TenantDocument, TenantDocumentType, TenantSettings, TenantTheme } from '../types';
 
 const orNull = <T>(v: T | undefined | null | ''): T | null => (v === undefined || v === null || v === '' ? null : v);
 
@@ -145,24 +145,108 @@ export const supplierRow = (s: Supplier) => ({
   created_at: s.created_at
 });
 
-const report = (what: string, error: { message: string } | null): boolean => {
-  if (error) console.error(`Falha ao salvar ${what}:`, error.message);
-  return !error;
+const uuidOrNull = (v?: string) => (v && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) ? v : null);
+const money = (v: unknown) => Math.round((Number(v) || 0) * 100) / 100;
+
+export const deviceRow = (d: Device) => ({
+  id: d.id,
+  tenant_id: d.tenant_id,
+  imei: d.imei,
+  brand: d.brand,
+  model: d.model,
+  storage_capacity: d.storage_capacity,
+  color: d.color || '',
+  battery_health: d.battery_health ?? null,
+  physical_condition_notes: orNull(d.physical_condition_notes),
+  supplier_id: uuidOrNull(d.supplier_id),
+  origin: d.origin,
+  origin_trade_in_id: uuidOrNull(d.origin_trade_in_id),
+  acquisition_cost: money(d.acquisition_cost),
+  accumulated_repair_cost: money(d.accumulated_repair_cost),
+  suggested_price: money(d.suggested_price),
+  status: d.status,
+  entry_date: d.entry_date,
+  sold_at: orNull(d.sold_at),
+  created_at: d.created_at,
+  updated_at: new Date().toISOString()
+});
+
+export const accessoryRow = (a: Accessory) => ({
+  id: a.id,
+  tenant_id: a.tenant_id,
+  name: a.name,
+  category: a.category,
+  barcode: orNull(a.barcode),
+  quantity: Math.trunc(Number(a.quantity) || 0),
+  unit_cost: money(a.unit_cost),
+  sale_price: money(a.sale_price),
+  supplier_id: uuidOrNull(a.supplier_id),
+  created_at: a.created_at,
+  updated_at: new Date().toISOString()
+});
+
+export const giftRow = (g: Gift) => ({
+  id: g.id,
+  tenant_id: g.tenant_id,
+  name: g.name,
+  category: g.category,
+  quantity: Math.trunc(Number(g.quantity) || 0),
+  unit_cost: money(g.unit_cost),
+  notes: orNull(g.notes),
+  supplier_id: uuidOrNull(g.supplier_id),
+  created_at: g.created_at
+});
+
+export const supplierPurchaseRow = (p: SupplierPurchase) => ({
+  id: p.id,
+  tenant_id: p.tenant_id,
+  supplier_id: p.supplier_id,
+  item_type: p.item_type,
+  item_id: p.item_id,
+  description: (p.description || '').slice(0, 255),
+  quantity: Math.trunc(Number(p.quantity) || 0),
+  unit_cost: money(p.unit_cost),
+  total_cost: money(p.total_cost),
+  purchased_at: p.purchased_at,
+  created_at: p.created_at
+});
+
+export type SyncTable = 'customers' | 'suppliers' | 'devices' | 'accessories' | 'gifts' | 'supplierPurchases';
+
+export const SYNC_TABLES: Record<SyncTable, { table: string; row: (rec: never) => Record<string, unknown> }> = {
+  customers: { table: 'customers', row: customerRow as never },
+  suppliers: { table: 'suppliers', row: supplierRow as never },
+  devices: { table: 'devices', row: deviceRow as never },
+  accessories: { table: 'accessories', row: accessoryRow as never },
+  gifts: { table: 'gifts', row: giftRow as never },
+  supplierPurchases: { table: 'supplier_purchases', row: supplierPurchaseRow as never }
 };
 
-export async function pushCustomers(customers: Customer[]): Promise<boolean> {
-  if (customers.length === 0) return true;
-  const { error } = await supabase.from('customers').upsert(customers.map(customerRow), { onConflict: 'id' });
-  return report('clientes', error);
+/** Grava (cria ou atualiza) os registros. Devolve false se o servidor recusou ou não respondeu. */
+export async function pushRows(kind: SyncTable, records: unknown[]): Promise<boolean> {
+  if (records.length === 0) return true;
+  const { table, row } = SYNC_TABLES[kind];
+  const rows = records.map(r => row(r as never));
+  const { error } = await supabase.from(table).upsert(rows, { onConflict: 'id' });
+  if (!error) return true;
+
+  // Perfil que pode alterar mas não cadastrar (ex.: vendedor baixando a quantidade de um acessório):
+  // o banco recusa o "criar ou atualizar"; tenta só atualizar, linha a linha.
+  if (error.code === '42501') {
+    const results = await Promise.all(
+      rows.map(r => supabase.from(table).update(r).eq('id', String(r.id)).select('id'))
+    );
+    const allUpdated = results.every(res => !res.error && (res.data || []).length === 1);
+    if (allUpdated) return true;
+  }
+  console.error(`Falha ao salvar ${table}:`, error.message);
+  return false;
 }
 
-export async function pushSuppliers(suppliers: Supplier[]): Promise<boolean> {
-  if (suppliers.length === 0) return true;
-  const { error } = await supabase.from('suppliers').upsert(suppliers.map(supplierRow), { onConflict: 'id' });
-  return report('fornecedores', error);
-}
-
-export async function removeSupplierRemote(supplierId: string): Promise<boolean> {
-  const { error } = await supabase.from('suppliers').delete().eq('id', supplierId);
-  return report('a exclusão do fornecedor', error);
+export async function deleteRows(kind: SyncTable, ids: string[]): Promise<boolean> {
+  if (ids.length === 0) return true;
+  const { table } = SYNC_TABLES[kind];
+  const { error } = await supabase.from(table).delete().in('id', ids);
+  if (error) console.error(`Falha ao excluir em ${table}:`, error.message);
+  return !error;
 }

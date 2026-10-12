@@ -1,7 +1,8 @@
 // ============================================================================
 // CONTROLPHONE — CADASTROS OPERACIONAIS NO BANCO (MODO REAL)
-// Clientes e fornecedores já são lidos e gravados no Supabase. Os demais
-// módulos entram aqui à medida que forem migrados.
+// Clientes, fornecedores e estoque (aparelhos, acessórios, brindes e histórico
+// de compras) já são lidos e gravados no Supabase. Os demais módulos entram
+// aqui à medida que forem migrados.
 //
 // Fluxo de cada sincronização:
 //   1. cadastros antigos (anteriores à ligação com o banco) ganham identificador novo;
@@ -10,49 +11,54 @@
 // ============================================================================
 
 import { supabase } from './supabase';
-import { store } from './store';
-import { Customer, Supplier, UserRole } from '../types';
+import { store, SyncKind } from './store';
+import { SYNC_TABLES } from './realSync';
+import { UserRole } from '../types';
 
 // O banco devolve null nos campos vazios; o sistema trabalha com campo ausente
-function clean<T>(row: Record<string, unknown>): T {
+function clean(row: Record<string, unknown>) {
   const out: Record<string, unknown> = {};
   Object.keys(row).forEach(key => {
     if (row[key] !== null && key !== 'updated_at') out[key] = row[key];
   });
-  return out as T;
+  return out as { id: string; tenant_id: string };
 }
+
+// O que cada perfil lê (fornecedores e histórico de compras expõem custos: só o administrador)
+const readableKinds = (role: UserRole): SyncKind[] =>
+  role === 'admin' || role === 'super_admin'
+    ? ['customers', 'suppliers', 'devices', 'accessories', 'gifts', 'supplierPurchases']
+    : ['customers', 'devices', 'accessories', 'gifts'];
 
 let running: Promise<boolean> | null = null;
 let lastSyncAt = 0;
 
-/** Sincroniza clientes e fornecedores da loja. Devolve false quando o servidor não respondeu. */
+/** Sincroniza os cadastros da loja. Devolve false quando algo não pôde ser enviado ou lido. */
 export function syncTenantRecords(tenantId: string, role: UserRole): Promise<boolean> {
   if (!store.isRealMode || !tenantId) return Promise.resolve(true);
   if (running) return running;
 
-  const canManageSuppliers = role === 'admin' || role === 'super_admin';
-  const canWriteCustomers = role !== 'technician';
-
   running = (async () => {
     try {
-      store.adoptLegacyRecords(tenantId, { customers: canWriteCustomers, suppliers: canManageSuppliers });
+      store.syncRole = role;
+      store.adoptLegacyRecords(tenantId, role);
       const pushed = await store.pushUnsynced();
 
-      const [customersRes, suppliersRes] = await Promise.all([
-        supabase.from('customers').select('*').eq('tenant_id', tenantId).order('created_at', { ascending: false }),
-        canManageSuppliers
-          ? supabase.from('suppliers').select('*').eq('tenant_id', tenantId).order('created_at', { ascending: false })
-          : Promise.resolve({ data: null, error: null })
-      ]);
-      if (customersRes.error || suppliersRes.error) {
-        console.error('Falha ao carregar cadastros:', customersRes.error?.message || suppliersRes.error?.message);
+      const kinds = readableKinds(role);
+      const results = await Promise.all(
+        kinds.map(kind => supabase.from(SYNC_TABLES[kind].table).select('*').eq('tenant_id', tenantId).order('created_at', { ascending: false }))
+      );
+      const failed = results.find(r => r.error);
+      if (failed) {
+        console.error('Falha ao carregar cadastros:', failed.error?.message);
         return false;
       }
 
-      store.applyRemoteRecords(tenantId, {
-        customers: (customersRes.data || []).map(row => clean<Customer>(row)),
-        suppliers: suppliersRes.data ? suppliersRes.data.map(row => clean<Supplier>(row)) : undefined
+      const remote: Partial<Record<SyncKind, { id: string; tenant_id: string }[]>> = {};
+      kinds.forEach((kind, i) => {
+        remote[kind] = (results[i].data || []).map(row => clean(row as Record<string, unknown>));
       });
+      store.applyRemoteRecords(tenantId, remote);
       lastSyncAt = Date.now();
       return pushed;
     } catch (err) {
@@ -65,8 +71,33 @@ export function syncTenantRecords(tenantId: string, role: UserRole): Promise<boo
   return running;
 }
 
-/** Ao voltar para a aba do sistema, busca o que foi cadastrado nos outros aparelhos (no máximo a cada 20 s). */
+/** Ao voltar para a aba do sistema, busca o que mudou nos outros aparelhos (no máximo a cada 20 s). */
 export function syncOnFocus(tenantId: string, role: UserRole) {
   if (Date.now() - lastSyncAt < 20_000) return;
   void syncTenantRecords(tenantId, role);
+}
+
+/**
+ * Tempo real: quando outro aparelho da loja altera estoque ou clientes, este busca a lista de novo.
+ * Devolve a função que encerra a escuta.
+ */
+export function watchTenantRecords(tenantId: string, role: UserRole): () => void {
+  if (!store.isRealMode || !tenantId) return () => undefined;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const refresh = () => {
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      void syncTenantRecords(tenantId, role);
+    }, 1500);
+  };
+  const channel = supabase.channel(`estoque-${tenantId}`);
+  (['devices', 'accessories', 'gifts', 'customers'] as const).forEach(table => {
+    channel.on('postgres_changes', { event: '*', schema: 'public', table, filter: `tenant_id=eq.${tenantId}` }, refresh);
+  });
+  channel.subscribe();
+  return () => {
+    if (timer) clearTimeout(timer);
+    void supabase.removeChannel(channel);
+  };
 }

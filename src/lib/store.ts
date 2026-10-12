@@ -7,12 +7,12 @@ import {
   Customer, Supplier, SupplierPurchase, Sale, TradeIn, ServiceOrder, InternalRepair,
   Expense, SalesGoal, AuditLog, SupportSession, PaymentMethod, DeviceMovement, MovementType, OSStatus,
   TenantSettings, Warranty, ReturnRequest, ReturnResolution, CustomerCredit, SaleItem, ExpenseCategory,
-  TenantDocument, TenantDocumentType, TenantFeatures, TenantPlan, TenantStatus
+  TenantDocument, TenantDocumentType, TenantFeatures, TenantPlan, TenantStatus, UserRole
 } from '../types';
 import { DEFAULT_FEATURES, buildDefaultTheme, isTenantOperational, sameCnpj } from './tenantSetup';
 
 import {
-  pushCustomers, pushDocument, pushSettings, pushSuppliers, pushTenant, pushTheme, removeDocument, removeSupplierRemote
+  deleteRows, pushDocument, pushRows, pushSettings, pushTenant, pushTheme, removeDocument
 } from './realSync';
 
 export interface AssistanceResult {
@@ -88,6 +88,26 @@ export const DEFAULT_WARRANTY_TERMS =
 export const isUuid = (v?: string) => Boolean(v && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v));
 // Identificador no formato do banco, para o registro poder ser gravado no servidor
 export const newUuid = () => crypto.randomUUID();
+
+// Cadastros que já são gravados no banco (modo real). A ordem é a de envio: quem é referenciado vai antes.
+export type SyncKind = 'customers' | 'suppliers' | 'devices' | 'accessories' | 'gifts' | 'supplierPurchases';
+export const SYNC_KINDS: SyncKind[] = ['customers', 'suppliers', 'devices', 'accessories', 'gifts', 'supplierPurchases'];
+type SyncQueue = Record<SyncKind, string[]>;
+const emptyQueue = (): SyncQueue => ({ customers: [], suppliers: [], devices: [], accessories: [], gifts: [], supplierPurchases: [] });
+type SyncRecord = { id: string; tenant_id: string };
+// Quem pode gravar cada cadastro (espelha as regras de acesso do banco)
+const SYNC_WRITERS: Record<SyncKind, UserRole[]> = {
+  customers: ['admin', 'seller', 'super_admin'],
+  suppliers: ['admin', 'super_admin'],
+  devices: ['admin', 'seller', 'technician', 'super_admin'],
+  accessories: ['admin', 'seller', 'technician', 'super_admin'],
+  gifts: ['admin', 'seller', 'technician', 'super_admin'],
+  supplierPurchases: ['admin', 'super_admin']
+};
+// Campos que existem só neste navegador (o servidor ainda não tem a coluna ou a referência)
+const LOCAL_ONLY_FIELDS = ['origin_trade_in_id'];
+// Cadastros cuja exclusão na tela também apaga a linha no banco
+const SYNC_DELETABLE: SyncKind[] = ['suppliers', 'supplierPurchases'];
 
 export type CustomerInput = Pick<Customer, 'name' | 'phone'> &
   Partial<Pick<Customer, 'whatsapp' | 'email' | 'cpf' | 'birth_date' | 'address' | 'notes'>>;
@@ -702,11 +722,21 @@ class ControlphoneStore {
    * Clientes e fornecedores já vão para o banco. Aqui ficam os ids que ainda não chegaram lá
    * (sem internet, por exemplo); o envio é refeito na próxima sincronização.
    */
-  unsynced: { customers: string[]; suppliers: string[] } = { customers: [], suppliers: [] };
-  /** true enquanto houver cadastro que não pôde ser enviado ao servidor */
+  unsynced: SyncQueue = emptyQueue();
+  /** Ids excluídos na tela cuja exclusão ainda não chegou ao servidor */
+  removed: SyncQueue = emptyQueue();
+  /** Perfil de quem está usando o sistema neste navegador; definido a cada sincronização */
+  syncRole: UserRole | null = null;
+  /** true enquanto houver alteração que não pôde ser enviada ao servidor */
   get hasUnsynced() {
-    return this.unsynced.customers.length + this.unsynced.suppliers.length > 0;
+    return SYNC_KINDS.some(k => this.unsynced[k].length + this.removed[k].length > 0);
   }
+  // Última versão de cada registro que o servidor confirmou ("tipo:id" -> conteúdo)
+  private syncedJson = new Map<string, string>();
+  // Registros criados junto de outra operação que ainda pode ser recusada: aguardam liberação
+  private held = new Set<string>();
+  private pushTimer: ReturnType<typeof setTimeout> | null = null;
+  private pushRunning: Promise<boolean> | null = null;
 
   /** true quando a última gravação no navegador falhou (ex.: armazenamento cheio). A tela avisa e pede ação. */
   saveFailed = false;
@@ -744,7 +774,10 @@ class ControlphoneStore {
     this.returnRequests = [];
     this.customerCredits = [];
     this.tenantDocuments = [];
-    this.unsynced = { customers: [], suppliers: [] };
+    this.unsynced = emptyQueue();
+    this.removed = emptyQueue();
+    this.syncedJson.clear();
+    this.held.clear();
   }
 
   /** Entra no modo real com a conta, as lojas e a equipe lidas do Supabase. */
@@ -769,6 +802,11 @@ class ControlphoneStore {
     });
     this.tenantSettings = { ...this.tenantSettings, ...identity.tenantSettings };
     this.tenantDocuments = identity.tenantDocuments;
+    // O que foi carregado deste navegador e não está na fila de envio é considerado igual ao servidor
+    this.syncRole = null;
+    SYNC_KINDS.forEach(kind => this.coll(kind).forEach(rec => {
+      if (!this.unsynced[kind].includes(rec.id)) this.syncedJson.set(`${kind}:${rec.id}`, JSON.stringify(rec));
+    }));
     this.saveToStorage();
   }
 
@@ -813,7 +851,8 @@ class ControlphoneStore {
         if (parsed.returnRequests) this.returnRequests = parsed.returnRequests;
         if (parsed.customerCredits) this.customerCredits = parsed.customerCredits;
         if (parsed.tenantDocuments) this.tenantDocuments = parsed.tenantDocuments;
-        if (parsed.unsynced) this.unsynced = { customers: parsed.unsynced.customers || [], suppliers: parsed.unsynced.suppliers || [] };
+        if (parsed.unsynced) this.unsynced = { ...emptyQueue(), ...parsed.unsynced };
+        if (parsed.removed) this.removed = { ...emptyQueue(), ...parsed.removed };
       }
     } catch (e) {
       console.warn('Erro ao carregar dados do localStorage:', e);
@@ -1023,6 +1062,7 @@ class ControlphoneStore {
 
   saveToStorage() {
     try {
+      this.trackChanges();
       const data = {
         tenants: this.tenants,
         themes: this.themes,
@@ -1047,7 +1087,8 @@ class ControlphoneStore {
         returnRequests: this.returnRequests,
         customerCredits: this.customerCredits,
         tenantDocuments: this.tenantDocuments,
-        unsynced: this.unsynced
+        unsynced: this.unsynced,
+        removed: this.removed
       };
       localStorage.setItem(this.storageKey, JSON.stringify(data));
       this.saveFailed = false;
@@ -1090,7 +1131,7 @@ class ControlphoneStore {
     this.supplierPurchases.unshift({
       ...purchase,
       total_cost: purchase.unit_cost * purchase.quantity,
-      id: 'pur-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
+      id: newUuid(),
       created_at: new Date().toISOString()
     });
   }
@@ -1117,24 +1158,101 @@ class ControlphoneStore {
   // CLIENTES E FORNECEDORES — gravados no banco (modo real) com cópia local
   // --------------------------------------------------------------------------
 
-  private markUnsynced(kind: 'customers' | 'suppliers', id: string) {
+  private coll(kind: SyncKind): SyncRecord[] {
+    return this[kind] as SyncRecord[];
+  }
+
+  private markUnsynced(kind: SyncKind, id: string) {
     if (!this.isRealMode) return; // na demonstração nada vai para o servidor
     if (!this.unsynced[kind].includes(id)) this.unsynced[kind].push(id);
   }
 
-  /** Envia ao servidor o que ainda está na fila. Chamado após cada cadastro e a cada sincronização. */
-  async pushUnsynced(): Promise<boolean> {
-    if (!this.isRealMode || !this.hasUnsynced) return true;
-    const customerIds = [...this.unsynced.customers];
-    const supplierIds = [...this.unsynced.suppliers];
-    const [customersOk, suppliersOk] = await Promise.all([
-      pushCustomers(this.customers.filter(c => customerIds.includes(c.id) && isUuid(c.id))),
-      pushSuppliers(this.suppliers.filter(s => supplierIds.includes(s.id) && isUuid(s.id)))
-    ]);
-    if (customersOk) this.unsynced.customers = this.unsynced.customers.filter(id => !customerIds.includes(id));
-    if (suppliersOk) this.unsynced.suppliers = this.unsynced.suppliers.filter(id => !supplierIds.includes(id));
-    this.saveToStorage();
-    return customersOk && suppliersOk;
+  /**
+   * Compara cada cadastro com a última versão confirmada pelo servidor e coloca na fila o que mudou.
+   * Roda a cada gravação, então qualquer operação (venda, upgrade, assistência, devolução) que altere
+   * o estoque é enviada sem precisar de código próprio.
+   */
+  private trackChanges() {
+    if (!this.isRealMode || !this.syncRole) return;
+    let found = false;
+    SYNC_KINDS.forEach(kind => {
+      if (!SYNC_WRITERS[kind].includes(this.syncRole as UserRole)) return;
+      const present = new Set<string>();
+      this.coll(kind).forEach(rec => {
+        if (!isUuid(rec.id) || this.held.has(rec.id)) return;
+        present.add(rec.id);
+        if (this.unsynced[kind].includes(rec.id)) return;
+        if (this.syncedJson.get(`${kind}:${rec.id}`) !== JSON.stringify(rec)) {
+          this.unsynced[kind].push(rec.id);
+          found = true;
+        }
+      });
+      if (!SYNC_DELETABLE.includes(kind)) return;
+      this.syncedJson.forEach((_, key) => {
+        if (!key.startsWith(kind + ':')) return;
+        const id = key.slice(kind.length + 1);
+        if (present.has(id)) return;
+        this.syncedJson.delete(key);
+        if (!this.removed[kind].includes(id)) this.removed[kind].push(id);
+        found = true;
+      });
+    });
+    if (found && !this.pushTimer) {
+      this.pushTimer = setTimeout(() => {
+        this.pushTimer = null;
+        void this.runPush();
+      }, 50);
+    }
+  }
+
+  // Envia a fila ao servidor, um cadastro por vez na ordem das dependências
+  private runPush(): Promise<boolean> {
+    if (!this.isRealMode) return Promise.resolve(true);
+    if (this.pushRunning) return this.pushRunning.then(() => (this.hasUnsynced ? this.runPush() : true));
+
+    this.pushRunning = (async () => {
+      let allOk = true;
+      for (const kind of SYNC_KINDS) {
+        const ids = this.unsynced[kind].filter(id => !this.held.has(id));
+        const sent = this.coll(kind)
+          .filter(rec => ids.includes(rec.id) && isUuid(rec.id))
+          .map(rec => ({ rec, json: JSON.stringify(rec) }));
+        if (sent.length > 0) {
+          const ok = await pushRows(kind, sent.map(x => x.rec));
+          if (ok) {
+            sent.forEach(({ rec, json }) => {
+              this.syncedJson.set(`${kind}:${rec.id}`, json);
+              // se o registro mudou enquanto era enviado, continua na fila para o próximo envio
+              if (JSON.stringify(rec) === json) this.unsynced[kind] = this.unsynced[kind].filter(id => id !== rec.id);
+            });
+          } else {
+            allOk = false;
+          }
+        }
+        // ids da fila cujo registro não existe mais não têm o que enviar
+        const alive = new Set(this.coll(kind).map(r => r.id));
+        this.unsynced[kind] = this.unsynced[kind].filter(id => alive.has(id));
+
+        const gone = [...this.removed[kind]];
+        if (gone.length > 0) {
+          if (await deleteRows(kind, gone)) this.removed[kind] = this.removed[kind].filter(id => !gone.includes(id));
+          else allOk = false;
+        }
+      }
+      return allOk;
+    })().finally(() => {
+      this.pushRunning = null;
+      this.saveToStorage();
+    });
+    return this.pushRunning;
+  }
+
+  /** Envia agora o que está na fila (inclusive o que aguardava liberação). Devolve false se algo não pôde ser enviado. */
+  pushUnsynced(): Promise<boolean> {
+    if (!this.isRealMode) return Promise.resolve(true);
+    this.held.clear();
+    this.trackChanges();
+    return this.runPush();
   }
 
   /**
@@ -1166,7 +1284,7 @@ class ControlphoneStore {
     const customer: Customer = existing || { id: newUuid(), tenant_id: p.tenantId, name, phone, created_at: new Date().toISOString() };
     Object.assign(customer, fields);
     if (!existing) this.customers.unshift(customer);
-    this.markUnsynced('customers', customer.id);
+    if (p.defer) this.held.add(customer.id);
 
     this.addAuditLog({
       tenant_id: p.tenantId, user_id: p.userId, user_role: this.roleOf(p.userId),
@@ -1174,13 +1292,13 @@ class ControlphoneStore {
       details: { nome: name, telefone: phone, origem: p.origin }
     });
     this.saveToStorage();
-    if (!p.defer) void this.pushUnsynced();
     return { ok: true, data: customer };
   }
 
   /** Desfaz um cliente criado com `defer` cuja operação principal foi recusada. */
   discardCustomer(customerId: string) {
     this.customers = this.customers.filter(c => c.id !== customerId);
+    this.held.delete(customerId);
     this.unsynced.customers = this.unsynced.customers.filter(id => id !== customerId);
     this.saveToStorage();
   }
@@ -1209,7 +1327,6 @@ class ControlphoneStore {
     const supplier: Supplier = existing || { id: newUuid(), tenant_id: p.tenantId, name, phone, created_at: new Date().toISOString() };
     Object.assign(supplier, fields);
     if (!existing) this.suppliers.unshift(supplier);
-    this.markUnsynced('suppliers', supplier.id);
 
     this.addAuditLog({
       tenant_id: p.tenantId, user_id: p.userId, user_role: this.roleOf(p.userId),
@@ -1217,57 +1334,116 @@ class ControlphoneStore {
       details: { nome: name, empresa: fields.company_name, telefone: phone }
     });
     this.saveToStorage();
-    void this.pushUnsynced();
     return { ok: true, data: supplier };
   }
 
   /**
-   * Recebe do servidor a lista atual de uma loja. Registros locais que ainda não foram enviados
-   * (fila de envio) são preservados; os demais passam a refletir exatamente o que está no banco.
+   * Recebe do servidor a lista atual de uma loja. O que está na fila de envio deste navegador é
+   * preservado; o restante passa a refletir exatamente o que está no banco. Campos que só existem
+   * localmente (ainda sem coluna no servidor) são mantidos.
    */
-  applyRemoteRecords(tenantId: string, remote: { customers?: Customer[]; suppliers?: Supplier[] }) {
-    if (remote.customers) {
-      const ids = new Set(remote.customers.map(c => c.id));
-      const pending = this.customers.filter(c => c.tenant_id === tenantId && !ids.has(c.id) && this.unsynced.customers.includes(c.id));
-      this.customers = [...pending, ...remote.customers, ...this.customers.filter(c => c.tenant_id !== tenantId)];
-    }
-    if (remote.suppliers) {
-      const ids = new Set(remote.suppliers.map(s => s.id));
-      const pending = this.suppliers.filter(s => s.tenant_id === tenantId && !ids.has(s.id) && this.unsynced.suppliers.includes(s.id));
-      this.suppliers = [...pending, ...remote.suppliers, ...this.suppliers.filter(s => s.tenant_id !== tenantId)];
-    }
+  applyRemoteRecords(tenantId: string, remote: Partial<Record<SyncKind, SyncRecord[]>>) {
+    SYNC_KINDS.forEach(kind => {
+      const rows = remote[kind];
+      if (!rows) return;
+      const local = this.coll(kind);
+      const localById = new Map(local.filter(r => r.tenant_id === tenantId).map(r => [r.id, r]));
+      const remoteIds = new Set(rows.map(r => r.id));
+      const queued = (id: string) => this.unsynced[kind].includes(id) || this.held.has(id);
+
+      const merged = rows
+        .filter(r => !this.removed[kind].includes(r.id))
+        .map(row => {
+          const mine = localById.get(row.id);
+          if (mine && queued(row.id)) return mine; // alteração local ainda não enviada prevalece
+          const next = mine ? Object.assign(mine, this.withoutServerGaps(mine, row)) : row;
+          this.syncedJson.set(`${kind}:${next.id}`, JSON.stringify(next));
+          return next;
+        });
+      // ainda não chegaram ao servidor: registros novos na fila e cadastros antigos que este perfil não pode enviar
+      const pending = local.filter(r => r.tenant_id === tenantId && !remoteIds.has(r.id) && (queued(r.id) || !isUuid(r.id)));
+      // o que o servidor não devolveu mais foi excluído em outro aparelho
+      local.forEach(r => {
+        if (r.tenant_id === tenantId && !remoteIds.has(r.id) && !queued(r.id)) this.syncedJson.delete(`${kind}:${r.id}`);
+      });
+
+      (this[kind] as SyncRecord[]) = [...pending, ...merged, ...local.filter(r => r.tenant_id !== tenantId)];
+    });
     this.saveToStorage();
+  }
+
+  // Campo vazio no servidor apaga o valor local, exceto os que o servidor ainda não guarda
+  private withoutServerGaps(local: SyncRecord, row: SyncRecord): SyncRecord {
+    const next: Record<string, unknown> = { ...row };
+    const mine = local as unknown as Record<string, unknown>;
+    Object.keys(mine).forEach(key => {
+      if (key in next) return;
+      if (LOCAL_ONLY_FIELDS.includes(key)) next[key] = mine[key];
+      else delete mine[key];
+    });
+    return next as unknown as SyncRecord;
   }
 
   /**
    * Cadastros feitos antes da ligação com o banco têm identificador antigo. Cada um recebe um
    * identificador novo, as referências (vendas, OS, garantias, estoque...) são ajustadas e ele entra na fila de envio.
    */
-  adoptLegacyRecords(tenantId: string, kinds: { customers: boolean; suppliers: boolean }): number {
+  adoptLegacyRecords(tenantId: string, role: UserRole): number {
+    const can = (kind: SyncKind) => SYNC_WRITERS[kind].includes(role);
+    // Estoque antigo sobe só pelo navegador do administrador, para não duplicar aparelhos entre aparelhos da equipe
+    const isManager = this.isManager(role);
     let adopted = 0;
-    if (kinds.customers) {
-      this.customers.filter(c => c.tenant_id === tenantId && !isUuid(c.id)).forEach(c => {
-        const oldId = c.id;
-        c.id = newUuid();
+    const swap = (rows: unknown[], field: string, oldId: string, newId: string) =>
+      (rows as Record<string, unknown>[]).forEach(row => {
+        if (row && row[field] === oldId) row[field] = newId;
+      });
+    const adopt = (kind: SyncKind, onRename: (oldId: string, newId: string) => void) => {
+      this.coll(kind).filter(r => r.tenant_id === tenantId && !isUuid(r.id)).forEach(rec => {
+        const oldId = rec.id;
+        rec.id = newUuid();
+        onRename(oldId, rec.id);
+        this.markUnsynced(kind, rec.id);
+        adopted++;
+      });
+    };
+    const saleItems = () => this.sales.flatMap(s => s.items || []);
+    const saleGifts = () => this.sales.flatMap(s => s.gifts || []);
+
+    if (can('customers')) {
+      adopt('customers', (o, n) =>
         [this.sales, this.tradeIns, this.serviceOrders, this.warranties, this.returnRequests, this.customerCredits]
-          .forEach(list => (list as { customer_id?: string }[]).forEach(row => {
-            if (row.customer_id === oldId) row.customer_id = c.id;
-          }));
-        this.markUnsynced('customers', c.id);
-        adopted++;
-      });
+          .forEach(list => swap(list, 'customer_id', o, n)));
     }
-    if (kinds.suppliers) {
-      this.suppliers.filter(s => s.tenant_id === tenantId && !isUuid(s.id)).forEach(s => {
-        const oldId = s.id;
-        s.id = newUuid();
-        [this.devices, this.accessories, this.gifts, this.supplierPurchases]
-          .forEach(list => (list as { supplier_id?: string }[]).forEach(row => {
-            if (row.supplier_id === oldId) row.supplier_id = s.id;
-          }));
-        this.markUnsynced('suppliers', s.id);
-        adopted++;
+    if (can('suppliers')) {
+      adopt('suppliers', (o, n) =>
+        [this.devices, this.accessories, this.gifts, this.supplierPurchases].forEach(list => swap(list, 'supplier_id', o, n)));
+    }
+    if (isManager) {
+      adopt('devices', (o, n) => {
+        [this.serviceOrders, this.internalRepairs, this.warranties, this.returnRequests, this.deviceMovements, saleItems()]
+          .forEach(list => swap(list, 'device_id', o, n));
+        swap(this.returnRequests, 'new_device_id', o, n);
+        swap(this.tradeIns, 'sold_device_id', o, n);
+        swap(this.tradeIns, 'received_device_id', o, n);
+        swap(this.tradeIns.map(t => t.received_device_snapshot), 'id', o, n);
+        swap(this.supplierPurchases, 'item_id', o, n);
       });
+      adopt('accessories', (o, n) => {
+        swap(saleItems(), 'accessory_id', o, n);
+        swap(this.supplierPurchases, 'item_id', o, n);
+      });
+      adopt('gifts', (o, n) => {
+        swap(saleGifts(), 'gift_id', o, n);
+        swap(this.supplierPurchases, 'item_id', o, n);
+      });
+      // histórico de compras só sobe quando fornecedor e item já têm identificador do banco
+      this.supplierPurchases
+        .filter(p => p.tenant_id === tenantId && !isUuid(p.id) && isUuid(p.supplier_id) && isUuid(p.item_id))
+        .forEach(p => {
+          p.id = newUuid();
+          this.markUnsynced('supplierPurchases', p.id);
+          adopted++;
+        });
     }
     if (adopted > 0) this.saveToStorage();
     return adopted;
@@ -1275,13 +1451,12 @@ class ControlphoneStore {
 
   // Exclui o fornecedor, desvincula os itens do estoque e remove o histórico de compras dele
   deleteSupplier(supplierId: string) {
-    this.unsynced.suppliers = this.unsynced.suppliers.filter(id => id !== supplierId);
-    if (this.isRealMode && isUuid(supplierId)) void removeSupplierRemote(supplierId);
     this.suppliers = this.suppliers.filter(s => s.id !== supplierId);
     this.supplierPurchases = this.supplierPurchases.filter(p => p.supplier_id !== supplierId);
     [...this.devices, ...this.accessories, ...this.gifts].forEach(item => {
       if (item.supplier_id === supplierId) item.supplier_id = undefined;
     });
+    this.saveToStorage(); // a gravação é que coloca a exclusão na fila de envio ao servidor
   }
 
   // Finalização Atômica de Venda
@@ -1697,7 +1872,7 @@ class ControlphoneStore {
 
     const now = new Date().toISOString();
     const tradeInId = uid('trade-');
-    const receivedDeviceId = known ? known.id : uid('dev-up-');
+    const receivedDeviceId = known ? known.id : newUuid();
     const receivedSnapshot = known ? { ...known } : undefined;
     const saleId = uid('sale-');
     const saleNumber = Math.max(1000, ...this.sales.map(s => s.sale_number)) + 1;

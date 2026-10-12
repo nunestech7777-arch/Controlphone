@@ -4,7 +4,7 @@
 
 import React, { useState } from 'react';
 import { Package, Gift as GiftIcon, Plus, Search, X } from 'lucide-react';
-import { store } from '../../lib/store';
+import { store, newUuid } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Accessory, Gift } from '../../types';
 import { formatBRL } from '../../lib/labels';
@@ -37,7 +37,7 @@ export const InventoryAccessories: React.FC = () => {
     let itemId: string;
     if (tab === 'accessories') {
       const newAcc: Accessory = {
-        id: 'acc-' + Date.now(),
+        id: newUuid(),
         tenant_id: tenantId,
         name,
         category,
@@ -51,7 +51,7 @@ export const InventoryAccessories: React.FC = () => {
       itemId = newAcc.id;
     } else {
       const newGift: Gift = {
-        id: 'gift-' + Date.now(),
+        id: newUuid(),
         tenant_id: tenantId,
         name,
         category,
