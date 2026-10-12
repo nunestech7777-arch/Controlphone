@@ -31,17 +31,31 @@ export interface UserPatch {
 
 const OFFLINE = 'Não foi possível falar com o servidor. Verifique a internet e tente de novo.';
 const NOT_INSTALLED = 'A função de administração ainda não está instalada no servidor.';
+// Mesmo texto que a função devolve quando o servidor não reconhece o login de quem chamou
+const SESSION_EXPIRED = 'Sessão expirada';
+const SIGN_IN_AGAIN = 'Sua sessão foi encerrada. Saia do sistema e entre novamente para continuar.';
+
+async function invoke<T>(action: string, body: Record<string, unknown>): Promise<AdminResult<T>> {
+  const { data, error } = await supabase.functions.invoke('admin', { body: { action, ...body } });
+  if (error) {
+    const status = (error as { context?: { status?: number } }).context?.status;
+    return { ok: false, error: status === 404 ? NOT_INSTALLED : OFFLINE };
+  }
+  if (!data || typeof data !== 'object') return { ok: false, error: OFFLINE };
+  if (data.ok === false) return { ok: false, error: data.error || 'Não foi possível concluir a ação.' };
+  return data as AdminResult<T>;
+}
 
 async function call<T>(action: string, body: Record<string, unknown> = {}): Promise<AdminResult<T>> {
   try {
-    const { data, error } = await supabase.functions.invoke('admin', { body: { action, ...body } });
-    if (error) {
-      const status = (error as { context?: { status?: number } }).context?.status;
-      return { ok: false, error: status === 404 ? NOT_INSTALLED : OFFLINE };
-    }
-    if (!data || typeof data !== 'object') return { ok: false, error: OFFLINE };
-    if (data.ok === false) return { ok: false, error: data.error || 'Não foi possível concluir a ação.' };
-    return data as AdminResult<T>;
+    const result = await invoke<T>(action, body);
+    if (result.ok || !result.error.startsWith(SESSION_EXPIRED)) return result;
+
+    // O servidor recusou o login: renova a sessão e tenta mais uma vez antes de desistir
+    const { data, error } = await supabase.auth.refreshSession();
+    if (error || !data.session) return { ok: false, error: SIGN_IN_AGAIN };
+    const retry = await invoke<T>(action, body);
+    return !retry.ok && retry.error.startsWith(SESSION_EXPIRED) ? { ok: false, error: SIGN_IN_AGAIN } : retry;
   } catch {
     return { ok: false, error: OFFLINE };
   }

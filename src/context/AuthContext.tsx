@@ -87,7 +87,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setStatus('ready');
           return;
         }
-        await supabase.auth.signOut();
+        await supabase.auth.signOut({ scope: 'local' });
         if (cancelled) return;
       }
       if (readDemoFlag()) {
@@ -118,7 +118,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const result = await loadRealIdentity(data.user.id);
     if (!result.ok) {
-      await supabase.auth.signOut();
+      await supabase.auth.signOut({ scope: 'local' });
       return result.error;
     }
     writeDemoFlag(false);
@@ -242,7 +242,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
     setStatus('signed_out');
-    void supabase.auth.signOut();
+    // Só este aparelho: o padrão do Supabase derrubaria a mesma conta nos outros aparelhos
+    void supabase.auth.signOut({ scope: 'local' });
   };
 
   const updateTheme = (theme: TenantTheme) => {
