@@ -12,7 +12,8 @@ import {
 import { DEFAULT_FEATURES, buildDefaultTheme, isTenantOperational, sameCnpj } from './tenantSetup';
 
 import {
-  deleteRows, pushDocument, pushRows, pushSettings, pushTenant, pushTheme, removeDocument
+  deleteRows, pushDocs, pushDocument, pushPlatformLogs, pushRows, pushSettings, pushSupportSession, pushTenant, pushTheme,
+  removeDocument, reserveNumbers
 } from './realSync';
 
 export interface AssistanceResult {
@@ -89,25 +90,66 @@ export const isUuid = (v?: string) => Boolean(v && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-
 // Identificador no formato do banco, para o registro poder ser gravado no servidor
 export const newUuid = () => crypto.randomUUID();
 
-// Cadastros que já são gravados no banco (modo real). A ordem é a de envio: quem é referenciado vai antes.
-export type SyncKind = 'customers' | 'suppliers' | 'devices' | 'accessories' | 'gifts' | 'supplierPurchases';
-export const SYNC_KINDS: SyncKind[] = ['customers', 'suppliers', 'devices', 'accessories', 'gifts', 'supplierPurchases'];
+// Cadastros com tabela própria no banco (modo real). A ordem é a de envio: quem é referenciado vai antes.
+export type TableKind = 'customers' | 'suppliers' | 'devices' | 'accessories' | 'gifts' | 'supplierPurchases';
+export const TABLE_KINDS: TableKind[] = ['customers', 'suppliers', 'devices', 'accessories', 'gifts', 'supplierPurchases'];
+// Módulos operacionais: cada registro é gravado como documento na tabela tenant_records (migration 17).
+// A garantia sobe antes da venda para outro aparelho nunca receber uma venda sem a garantia dela.
+export type DocKind =
+  | 'customerCredits' | 'warranties' | 'tradeIns' | 'sales' | 'returnRequests' | 'serviceOrders'
+  | 'internalRepairs' | 'expenses' | 'goals' | 'deviceMovements' | 'auditLogs';
+export const DOC_KINDS: DocKind[] = [
+  'customerCredits', 'warranties', 'tradeIns', 'sales', 'returnRequests', 'serviceOrders',
+  'internalRepairs', 'expenses', 'goals', 'deviceMovements', 'auditLogs'
+];
+export type SyncKind = TableKind | DocKind;
+export const SYNC_KINDS: SyncKind[] = [...TABLE_KINDS, ...DOC_KINDS];
+export const isDocKind = (kind: SyncKind): kind is DocKind => (DOC_KINDS as SyncKind[]).includes(kind);
 type SyncQueue = Record<SyncKind, string[]>;
-const emptyQueue = (): SyncQueue => ({ customers: [], suppliers: [], devices: [], accessories: [], gifts: [], supplierPurchases: [] });
+const emptyQueue = (): SyncQueue => Object.fromEntries(SYNC_KINDS.map(kind => [kind, [] as string[]])) as SyncQueue;
+const emptyDocQueue = () => Object.fromEntries(DOC_KINDS.map(kind => [kind, [] as string[]])) as Record<DocKind, string[]>;
 type SyncRecord = { id: string; tenant_id: string };
-// Quem pode gravar cada cadastro (espelha as regras de acesso do banco)
+// Quem pode gravar cada cadastro (espelha as regras de acesso do banco: migrations 15, 16 e 17)
+const STAFF: UserRole[] = ['admin', 'seller', 'technician', 'super_admin'];
+const SALES_TEAM: UserRole[] = ['admin', 'seller', 'super_admin'];
+const MANAGERS: UserRole[] = ['admin', 'super_admin'];
 const SYNC_WRITERS: Record<SyncKind, UserRole[]> = {
-  customers: ['admin', 'seller', 'super_admin'],
-  suppliers: ['admin', 'super_admin'],
-  devices: ['admin', 'seller', 'technician', 'super_admin'],
-  accessories: ['admin', 'seller', 'technician', 'super_admin'],
-  gifts: ['admin', 'seller', 'technician', 'super_admin'],
-  supplierPurchases: ['admin', 'super_admin']
+  customers: SALES_TEAM,
+  suppliers: MANAGERS,
+  devices: STAFF,
+  accessories: STAFF,
+  gifts: STAFF,
+  supplierPurchases: MANAGERS,
+  customerCredits: SALES_TEAM,
+  warranties: STAFF,
+  tradeIns: SALES_TEAM,
+  sales: SALES_TEAM,
+  returnRequests: SALES_TEAM,
+  serviceOrders: STAFF,
+  internalRepairs: STAFF,
+  expenses: MANAGERS,
+  goals: MANAGERS,
+  deviceMovements: STAFF,
+  auditLogs: STAFF // só inclusão, e cada um envia apenas o que ele mesmo fez
 };
 // Campos que existem só neste navegador (o servidor ainda não tem a coluna ou a referência)
 const LOCAL_ONLY_FIELDS = ['origin_trade_in_id'];
 // Cadastros cuja exclusão na tela também apaga a linha no banco
 const SYNC_DELETABLE: SyncKind[] = ['suppliers', 'supplierPurchases'];
+// Registros que nunca mudam depois de criados: basta saber se o servidor já tem (não se compara o conteúdo)
+const APPEND_ONLY: SyncKind[] = ['deviceMovements', 'auditLogs'];
+// Envio em lotes, para um navegador com muito histórico não mandar tudo em um pedido só
+const PUSH_BATCH = 200;
+
+// Numeração por loja reservada no servidor (migration 17). `base` é o número anterior ao primeiro.
+export type NumberKind = 'sales' | 'serviceOrders' | 'returnRequests';
+const NUMBER_RULES: Record<NumberKind, { field: string; base: number }> = {
+  sales: { field: 'sale_number', base: 1000 },
+  serviceOrders: { field: 'os_number', base: 500 },
+  returnRequests: { field: 'request_number', base: 100 }
+};
+const NUMBER_KINDS = Object.keys(NUMBER_RULES) as NumberKind[];
+const NUMBERS_KEY = 'controlphone_numbers_v1_';
 
 export type CustomerInput = Pick<Customer, 'name' | 'phone'> &
   Partial<Pick<Customer, 'whatsapp' | 'email' | 'cpf' | 'birth_date' | 'address' | 'notes'>>;
@@ -719,7 +761,7 @@ class ControlphoneStore {
   private listeners: Set<() => void> = new Set();
 
   /**
-   * Clientes e fornecedores já vão para o banco. Aqui ficam os ids que ainda não chegaram lá
+   * Cadastros e módulos operacionais já vão para o banco. Aqui ficam os ids que ainda não chegaram lá
    * (sem internet, por exemplo); o envio é refeito na próxima sincronização.
    */
   unsynced: SyncQueue = emptyQueue();
@@ -727,14 +769,39 @@ class ControlphoneStore {
   removed: SyncQueue = emptyQueue();
   /** Perfil de quem está usando o sistema neste navegador; definido a cada sincronização */
   syncRole: UserRole | null = null;
+  /** Usuário logado: cada um envia ao servidor só o histórico de atividades que ele mesmo gerou */
+  syncUserId: string | null = null;
+  /**
+   * Registros dos módulos operacionais que existiam só neste navegador antes da ligação com o banco.
+   * Cada um sobe uma única vez, quando entrar um perfil que possa gravá-lo; lista vazia = tudo enviado.
+   */
+  legacyPending: Record<DocKind, string[]> = emptyDocQueue();
+  /**
+   * Painel da plataforma (Super Admin): sessões de suporte e ações sem loja (ex.: loja excluída) que
+   * ainda não chegaram ao servidor. As ações feitas em uma loja seguem a fila normal (auditLogs).
+   */
+  platformPending: { logs: string[]; sessions: string[] } = { logs: [], sessions: [] };
+  // true quando entrou algo novo na fila da plataforma desde o último envio (evita reenviar em laço)
+  private platformDirty = false;
+  /** Até onde este navegador já recebeu cada tipo de documento ("loja:tipo" -> data da última linha lida) */
+  syncCursors: Record<string, string> = {};
+  /** true quando o último envio ao servidor falhou (sem conexão ou recusado) e há alteração na fila */
+  pushFailed = false;
+  /** Muda a cada entrada no modo real: quem sincroniza sabe que a cópia local foi recarregada */
+  sessionSeq = 0;
   /** true enquanto houver alteração que não pôde ser enviada ao servidor */
   get hasUnsynced() {
-    return SYNC_KINDS.some(k => this.unsynced[k].length + this.removed[k].length > 0);
+    return SYNC_KINDS.some(k => this.unsynced[k].length + this.removed[k].length > 0) || this.hasPlatformPending;
+  }
+  private get hasPlatformPending() {
+    return this.syncRole === 'super_admin' && this.platformPending.logs.length + this.platformPending.sessions.length > 0;
   }
   // Última versão de cada registro que o servidor confirmou ("tipo:id" -> conteúdo)
   private syncedJson = new Map<string, string>();
   // Registros criados junto de outra operação que ainda pode ser recusada: aguardam liberação
   private held = new Set<string>();
+  // Quando cada registro foi confirmado pelo servidor nesta sessão ("tipo:id" -> horário local)
+  private pushedAt = new Map<string, number>();
   private pushTimer: ReturnType<typeof setTimeout> | null = null;
   private pushRunning: Promise<boolean> | null = null;
 
@@ -776,7 +843,12 @@ class ControlphoneStore {
     this.tenantDocuments = [];
     this.unsynced = emptyQueue();
     this.removed = emptyQueue();
+    this.legacyPending = emptyDocQueue();
+    this.platformPending = { logs: [], sessions: [] };
+    this.syncCursors = {};
+    this.pushFailed = false;
     this.syncedJson.clear();
+    this.pushedAt.clear();
     this.held.clear();
   }
 
@@ -804,9 +876,15 @@ class ControlphoneStore {
     this.tenantDocuments = identity.tenantDocuments;
     // O que foi carregado deste navegador e não está na fila de envio é considerado igual ao servidor
     this.syncRole = null;
-    SYNC_KINDS.forEach(kind => this.coll(kind).forEach(rec => {
-      if (!this.unsynced[kind].includes(rec.id)) this.syncedJson.set(`${kind}:${rec.id}`, JSON.stringify(rec));
-    }));
+    this.syncUserId = null;
+    this.sessionSeq++;
+    SYNC_KINDS.forEach(kind => {
+      const queued = new Set(this.unsynced[kind]);
+      const appendOnly = APPEND_ONLY.includes(kind);
+      this.coll(kind).forEach(rec => {
+        if (!queued.has(rec.id)) this.syncedJson.set(`${kind}:${rec.id}`, appendOnly ? '' : JSON.stringify(rec));
+      });
+    });
     this.saveToStorage();
   }
 
@@ -821,10 +899,14 @@ class ControlphoneStore {
 
   private loadFromStorage() {
     let hasPurchaseHistory = false;
+    let hasLegacyList = false;
+    let hasPlatformList = false;
+    let hasSavedState = false;
     try {
       const saved = localStorage.getItem(this.storageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
+        hasSavedState = true;
         if (parsed.tenants) this.tenants = parsed.tenants;
         if (parsed.themes) this.themes = parsed.themes;
         if (parsed.profiles) this.profiles = parsed.profiles;
@@ -853,17 +935,52 @@ class ControlphoneStore {
         if (parsed.tenantDocuments) this.tenantDocuments = parsed.tenantDocuments;
         if (parsed.unsynced) this.unsynced = { ...emptyQueue(), ...parsed.unsynced };
         if (parsed.removed) this.removed = { ...emptyQueue(), ...parsed.removed };
+        if (parsed.syncCursors) this.syncCursors = parsed.syncCursors;
+        if (parsed.legacyPending) {
+          this.legacyPending = { ...emptyDocQueue(), ...parsed.legacyPending };
+          hasLegacyList = true;
+        }
+        if (parsed.platformPending) {
+          this.platformPending = { logs: [], sessions: [], ...parsed.platformPending };
+          hasPlatformList = true;
+        }
       }
     } catch (e) {
       console.warn('Erro ao carregar dados do localStorage:', e);
     }
     // Estados salvos antes do módulo Fornecedores: reconstrói o histórico a partir do estoque vinculado
     if (!hasPurchaseHistory) this.supplierPurchases = this.buildPurchasesFromStock();
-    this.normalizeLegacyData();
+
+    const before = new Map(DOC_KINDS.map(kind => [kind, new Set(this.coll(kind).map(r => r.id))]));
+    // No modo real o estoque vem do servidor: navegador sem movimentações não significa aparelho sem
+    // histórico (ele pode nunca tê-las recebido, ou elas saíram do cache por falta de espaço). Reconstruir
+    // aqui criaria uma "entrada no estoque" repetida para cada aparelho, que depois subiria para o banco.
+    this.normalizeLegacyData(!this.isRealMode);
+    if (!this.isRealMode) return;
+    // Estado salvo antes da ligação do painel da plataforma com o banco: sessões de suporte e ações
+    // sem loja guardadas aqui ainda não existem no servidor
+    if (hasSavedState && !hasPlatformList) {
+      this.platformPending = {
+        sessions: this.supportSessions.map(x => x.id),
+        logs: this.auditLogs.filter(l => !l.tenant_id).map(l => l.id)
+      };
+    }
+    DOC_KINDS.forEach(kind => {
+      // Estado salvo antes da ligação destes módulos com o banco: tudo o que há aqui só existe neste navegador.
+      // Depois disso, só o que a normalização acabou de criar (ex.: garantia de uma venda antiga) é local.
+      const localOnly = hasSavedState && !hasLegacyList
+        ? this.coll(kind)
+        : this.coll(kind).filter(r => !before.get(kind)!.has(r.id));
+      localOnly.forEach(r => {
+        if (r.tenant_id && !this.legacyPending[kind].includes(r.id) && !this.unsynced[kind].includes(r.id)) {
+          this.legacyPending[kind].push(r.id);
+        }
+      });
+    });
   }
 
   // Estados salvos antes do fluxo de assistência interna/externa: completa os campos novos sem apagar nada
-  private normalizeLegacyData() {
+  private normalizeLegacyData(rebuildMovements = true) {
     this.devices.forEach(d => {
       delete (d as unknown as Record<string, unknown>).condition;
     });
@@ -884,7 +1001,7 @@ class ControlphoneStore {
       const os: ServiceOrder = {
         id: 'os-int-' + r.id,
         tenant_id: r.tenant_id,
-        os_number: this.nextOsNumber(),
+        os_number: this.localMaxNumber('serviceOrders', r.tenant_id) + 1,
         origin: 'internal',
         device_id: device.id,
         intake_seller_id: r.technician_id,
@@ -926,7 +1043,7 @@ class ControlphoneStore {
         };
         const sale: Sale = {
           id: saleId, tenant_id: t.tenant_id,
-          sale_number: Math.max(1000, ...this.sales.map(s => s.sale_number)) + 1,
+          sale_number: this.localMaxNumber('sales', t.tenant_id) + 1,
           seller_id: t.seller_id, customer_id: t.customer_id, sales_origin: 'Não informada',
           subtotal: Number(t.sold_device_price), discount_amount: 0, total_amount: Number(t.sold_device_price),
           total_cost: cost, gross_profit: Number(t.sold_device_price) - cost,
@@ -964,7 +1081,7 @@ class ControlphoneStore {
       w.history.push(this.event(`Prazo ajustado de ${previous} para ${WARRANTY_DAYS} dias (garantia fixa de 90 dias)`));
     });
 
-    if (this.deviceMovements.length === 0) {
+    if (rebuildMovements && this.deviceMovements.length === 0) {
       this.devices.forEach(d => {
         this.deviceMovements.push({
           id: 'mov-entry-' + d.id, tenant_id: d.tenant_id, device_id: d.id, imei: d.imei,
@@ -987,18 +1104,84 @@ class ControlphoneStore {
     return this.profiles.find(p => p.id === userId)?.role || 'seller';
   }
 
-  private nextOsNumber(): number {
-    return Math.max(500, ...this.serviceOrders.map(o => o.os_number)) + 1;
+  // --- NUMERAÇÃO POR LOJA (venda, ordem de serviço e solicitação de troca) ---
+
+  private localMaxNumber(kind: NumberKind, tenantId: string): number {
+    const { field, base } = NUMBER_RULES[kind];
+    return (this[kind] as unknown as Record<string, unknown>[]).reduce(
+      (max, rec) => (rec.tenant_id === tenantId ? Math.max(max, Number(rec[field]) || 0) : max), base);
+  }
+
+  // Números já reservados no servidor para esta loja. Ficam em uma chave própria do navegador,
+  // lida e gravada na hora do uso, para duas abas abertas não usarem o mesmo número.
+  private readReservedNumbers(tenantId: string): Partial<Record<NumberKind, number[]>> {
+    try {
+      return JSON.parse(localStorage.getItem(NUMBERS_KEY + tenantId) || '{}') || {};
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * Próximo número da loja. No modo real usa o número reservado no servidor (único entre os aparelhos);
+   * sem reserva disponível (sem conexão), usa o maior número que este navegador conhece da loja + 1.
+   */
+  private nextNumber(kind: NumberKind, tenantId: string): number {
+    const localNext = this.localMaxNumber(kind, tenantId) + 1;
+    if (!this.isRealMode) return localNext;
+    let number = localNext;
+    try {
+      const pool = this.readReservedNumbers(tenantId);
+      // reserva menor que um número já usado aqui (venda feita sem conexão) é descartada
+      const usable = (pool[kind] || []).filter(n => n >= localNext);
+      if (usable.length > 0) number = usable.shift() as number;
+      pool[kind] = usable;
+      localStorage.setItem(NUMBERS_KEY + tenantId, JSON.stringify(pool));
+    } catch {
+      // sem acesso à reserva, segue com a numeração local
+    }
+    void this.refillNumbers(tenantId);
+    return number;
+  }
+
+  private refilling = new Set<string>();
+
+  /** Deixa um número reservado para cada sequência que este perfil usa (as operações de venda e OS são síncronas). */
+  async refillNumbers(tenantId: string): Promise<void> {
+    const role = this.syncRole;
+    if (!this.isRealMode || !role || !tenantId) return;
+    await Promise.all(NUMBER_KINDS.map(async kind => {
+      const key = `${tenantId}:${kind}`;
+      if (!SYNC_WRITERS[kind].includes(role) || this.refilling.has(key)) return;
+      if ((this.readReservedNumbers(tenantId)[kind] || []).length > 0) return;
+      this.refilling.add(key);
+      try {
+        const numbers = await reserveNumbers(kind, 1, tenantId);
+        if (!numbers || numbers.length === 0) return;
+        const pool = this.readReservedNumbers(tenantId);
+        pool[kind] = [...(pool[kind] || []), ...numbers];
+        localStorage.setItem(NUMBERS_KEY + tenantId, JSON.stringify(pool));
+      } catch {
+        // sem conexão ou sem espaço: a próxima operação usa a numeração local
+      } finally {
+        this.refilling.delete(key);
+      }
+    }));
   }
 
   // --- RASTREABILIDADE DE MOVIMENTAÇÕES ---
 
+  private lastMovementAt = 0;
+
   recordMovement(m: Omit<DeviceMovement, 'id' | 'created_at' | 'user_name'>) {
+    // Duas movimentações da mesma operação nunca ficam com o mesmo horário: a ordem se mantém
+    // em qualquer aparelho, depois de passar pelo servidor
+    this.lastMovementAt = Math.max(Date.now(), this.lastMovementAt + 1);
     this.deviceMovements.unshift({
       ...m,
       id: 'mov-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
       user_name: this.profiles.find(p => p.id === m.user_id)?.full_name,
-      created_at: new Date().toISOString()
+      created_at: new Date(this.lastMovementAt).toISOString()
     });
   }
 
@@ -1060,41 +1243,63 @@ class ControlphoneStore {
     return purchases;
   }
 
+  // Cópia de trabalho que vai para o cache do navegador. `trim` lista os tipos dos quais só fica o que
+  // ainda não chegou ao servidor (o restante é buscado de novo na próxima vez que o sistema abrir).
+  private snapshot(trim: DocKind[] = []) {
+    const kept = (kind: DocKind) =>
+      trim.includes(kind) ? this.coll(kind).filter(rec => !this.syncedJson.has(`${kind}:${rec.id}`)) : this[kind];
+    const syncCursors = Object.fromEntries(
+      Object.entries(this.syncCursors).filter(([key]) => !trim.some(kind => key.endsWith(':' + kind))));
+    return {
+      tenants: this.tenants,
+      themes: this.themes,
+      profiles: this.profiles,
+      customers: this.customers,
+      suppliers: this.suppliers,
+      supplierPurchases: this.supplierPurchases,
+      devices: this.devices,
+      accessories: this.accessories,
+      gifts: this.gifts,
+      sales: this.sales,
+      tradeIns: this.tradeIns,
+      serviceOrders: this.serviceOrders,
+      internalRepairs: this.internalRepairs,
+      expenses: this.expenses,
+      goals: this.goals,
+      auditLogs: kept('auditLogs'),
+      supportSessions: this.supportSessions,
+      deviceMovements: kept('deviceMovements'),
+      tenantSettings: this.tenantSettings,
+      warranties: this.warranties,
+      returnRequests: this.returnRequests,
+      customerCredits: this.customerCredits,
+      tenantDocuments: this.tenantDocuments,
+      unsynced: this.unsynced,
+      removed: this.removed,
+      legacyPending: this.legacyPending,
+      platformPending: this.platformPending,
+      syncCursors
+    };
+  }
+
   saveToStorage() {
     try {
       this.trackChanges();
-      const data = {
-        tenants: this.tenants,
-        themes: this.themes,
-        profiles: this.profiles,
-        customers: this.customers,
-        suppliers: this.suppliers,
-        supplierPurchases: this.supplierPurchases,
-        devices: this.devices,
-        accessories: this.accessories,
-        gifts: this.gifts,
-        sales: this.sales,
-        tradeIns: this.tradeIns,
-        serviceOrders: this.serviceOrders,
-        internalRepairs: this.internalRepairs,
-        expenses: this.expenses,
-        goals: this.goals,
-        auditLogs: this.auditLogs,
-        supportSessions: this.supportSessions,
-        deviceMovements: this.deviceMovements,
-        tenantSettings: this.tenantSettings,
-        warranties: this.warranties,
-        returnRequests: this.returnRequests,
-        customerCredits: this.customerCredits,
-        tenantDocuments: this.tenantDocuments,
-        unsynced: this.unsynced,
-        removed: this.removed
-      };
-      localStorage.setItem(this.storageKey, JSON.stringify(data));
+      localStorage.setItem(this.storageKey, JSON.stringify(this.snapshot()));
       this.saveFailed = false;
     } catch (e) {
-      console.error('Erro ao salvar no storage:', e);
-      this.saveFailed = true;
+      // Não coube no navegador. No modo real, o histórico de atividades e as movimentações que o servidor
+      // já confirmou saem do cache (continuam na tela e no banco) antes de dar a gravação como perdida.
+      const saved = this.isRealMode && ([['auditLogs'], ['auditLogs', 'deviceMovements']] as DocKind[][]).some(trim => {
+        try {
+          localStorage.setItem(this.storageKey, JSON.stringify(this.snapshot(trim)));
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (!saved) console.error('Erro ao salvar no storage:', e);
+      this.saveFailed = !saved;
     }
     this.notify();
   }
@@ -1116,6 +1321,12 @@ class ControlphoneStore {
       id: 'log-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
       created_at: new Date().toISOString()
     };
+    // ação da plataforma sem loja: vai para a tabela de histórico do servidor, que usa identificador próprio
+    if (this.isRealMode && !newLog.tenant_id) {
+      newLog.id = newUuid();
+      this.platformPending.logs.push(newLog.id);
+      this.platformDirty = true;
+    }
     this.auditLogs.unshift(newLog);
     this.saveToStorage();
   }
@@ -1167,25 +1378,63 @@ class ControlphoneStore {
     if (!this.unsynced[kind].includes(id)) this.unsynced[kind].push(id);
   }
 
+  // Histórico de atividades: cada usuário envia só o que ele mesmo gerou (o banco recusa o resto)
+  private canSend(kind: SyncKind, rec: SyncRecord): boolean {
+    return kind !== 'auditLogs' || (Boolean(this.syncUserId) && (rec as AuditLog).user_id === this.syncUserId);
+  }
+
   /**
-   * Compara cada cadastro com a última versão confirmada pelo servidor e coloca na fila o que mudou.
-   * Roda a cada gravação, então qualquer operação (venda, upgrade, assistência, devolução) que altere
-   * o estoque é enviada sem precisar de código próprio.
+   * Compara cada registro com a última versão confirmada pelo servidor e coloca na fila o que mudou.
+   * Roda a cada gravação, então qualquer operação (venda, upgrade, assistência, devolução) é enviada
+   * sem precisar de código próprio. Movimentações e histórico nunca mudam depois de criados: para
+   * eles basta saber se o servidor já tem o registro, sem comparar o conteúdo.
    */
   private trackChanges() {
     if (!this.isRealMode || !this.syncRole) return;
+    const role = this.syncRole;
     let found = false;
     SYNC_KINDS.forEach(kind => {
-      if (!SYNC_WRITERS[kind].includes(this.syncRole as UserRole)) return;
-      const present = new Set<string>();
-      this.coll(kind).forEach(rec => {
-        if (!isUuid(rec.id) || this.held.has(rec.id)) return;
-        present.add(rec.id);
-        if (this.unsynced[kind].includes(rec.id)) return;
-        if (this.syncedJson.get(`${kind}:${rec.id}`) !== JSON.stringify(rec)) {
-          this.unsynced[kind].push(rec.id);
+      if (!SYNC_WRITERS[kind].includes(role)) return;
+      const doc = isDocKind(kind);
+      const appendOnly = APPEND_ONLY.includes(kind);
+      const queue = this.unsynced[kind];
+      const queued = new Set(queue);
+      const records = this.coll(kind);
+
+      // Registros que só existiam neste navegador sobem uma única vez, com o primeiro perfil que pode gravá-los
+      const waiting = new Set<string>();
+      if (doc && this.legacyPending[kind].length > 0) {
+        const legacy = new Set(this.legacyPending[kind]);
+        records.forEach(rec => {
+          if (!legacy.has(rec.id)) return;
+          if (!rec.tenant_id || !this.canSend(kind, rec)) {
+            waiting.add(rec.id);
+            return;
+          }
+          if (!queued.has(rec.id)) {
+            queue.push(rec.id);
+            queued.add(rec.id);
+          }
           found = true;
+        });
+        this.legacyPending[kind] = [...waiting];
+      }
+
+      const present = new Set<string>();
+      records.forEach(rec => {
+        if (doc ? !rec.tenant_id : !isUuid(rec.id)) return;
+        if (this.held.has(rec.id)) return;
+        present.add(rec.id);
+        if (queued.has(rec.id) || waiting.has(rec.id)) return;
+        const key = `${kind}:${rec.id}`;
+        if (appendOnly) {
+          if (this.syncedJson.has(key) || !this.canSend(kind, rec)) return;
+        } else if (this.syncedJson.get(key) === JSON.stringify(rec)) {
+          return;
         }
+        queue.push(rec.id);
+        queued.add(rec.id);
+        found = true;
       });
       if (!SYNC_DELETABLE.includes(kind)) return;
       this.syncedJson.forEach((_, key) => {
@@ -1197,6 +1446,10 @@ class ControlphoneStore {
         found = true;
       });
     });
+    if (this.platformDirty && this.hasPlatformPending) {
+      this.platformDirty = false;
+      found = true;
+    }
     if (found && !this.pushTimer) {
       this.pushTimer = setTimeout(() => {
         this.pushTimer = null;
@@ -1205,7 +1458,7 @@ class ControlphoneStore {
     }
   }
 
-  // Envia a fila ao servidor, um cadastro por vez na ordem das dependências
+  // Envia a fila ao servidor, um tipo por vez na ordem das dependências
   private runPush(): Promise<boolean> {
     if (!this.isRealMode) return Promise.resolve(true);
     if (this.pushRunning) return this.pushRunning.then(() => (this.hasUnsynced ? this.runPush() : true));
@@ -1213,38 +1466,139 @@ class ControlphoneStore {
     this.pushRunning = (async () => {
       let allOk = true;
       for (const kind of SYNC_KINDS) {
-        const ids = this.unsynced[kind].filter(id => !this.held.has(id));
-        const sent = this.coll(kind)
-          .filter(rec => ids.includes(rec.id) && isUuid(rec.id))
+        const doc = isDocKind(kind);
+        const appendOnly = APPEND_ONLY.includes(kind);
+        const ids = new Set(this.unsynced[kind].filter(id => !this.held.has(id)));
+        const seen = new Set<string>();
+        const sent = ids.size === 0 ? [] : this.coll(kind)
+          .filter(rec => ids.has(rec.id) && (doc ? Boolean(rec.tenant_id) && this.canSend(kind, rec) : isUuid(rec.id)))
+          // o banco recusa o lote inteiro se o mesmo id aparecer duas vezes
+          .filter(rec => !seen.has(rec.id) && Boolean(seen.add(rec.id)))
           .map(rec => ({ rec, json: JSON.stringify(rec) }));
-        if (sent.length > 0) {
-          const ok = await pushRows(kind, sent.map(x => x.rec));
-          if (ok) {
-            sent.forEach(({ rec, json }) => {
-              this.syncedJson.set(`${kind}:${rec.id}`, json);
-              // se o registro mudou enquanto era enviado, continua na fila para o próximo envio
-              if (JSON.stringify(rec) === json) this.unsynced[kind] = this.unsynced[kind].filter(id => id !== rec.id);
-            });
-          } else {
-            allOk = false;
+
+        // lotes limitados em quantidade e em tamanho (despesas podem carregar comprovante de até 1 MB)
+        for (let start = 0; start < sent.length;) {
+          let end = start;
+          let size = 0;
+          while (end < sent.length && end - start < PUSH_BATCH && (end === start || size + sent[end].json.length <= 1_500_000)) {
+            size += sent[end].json.length;
+            end++;
           }
+          const batch = sent.slice(start, end);
+          start = end;
+          const ok = doc
+            ? await pushDocs(kind, batch.map(({ rec, json }) => ({ id: rec.id, tenant_id: rec.tenant_id, json })))
+            : await pushRows(kind, batch.map(x => x.rec));
+          if (!ok) {
+            allOk = false;
+            break;
+          }
+          const done = new Set<string>();
+          batch.forEach(({ rec, json }) => {
+            this.syncedJson.set(`${kind}:${rec.id}`, appendOnly ? '' : json);
+            this.pushedAt.set(`${kind}:${rec.id}`, Date.now());
+            // se o registro mudou enquanto era enviado, continua na fila para o próximo envio
+            if (appendOnly || JSON.stringify(rec) === json) done.add(rec.id);
+          });
+          this.unsynced[kind] = this.unsynced[kind].filter(id => !done.has(id));
         }
         // ids da fila cujo registro não existe mais não têm o que enviar
-        const alive = new Set(this.coll(kind).map(r => r.id));
-        this.unsynced[kind] = this.unsynced[kind].filter(id => alive.has(id));
+        if (this.unsynced[kind].length > 0) {
+          const alive = new Set(this.coll(kind).map(r => r.id));
+          this.unsynced[kind] = this.unsynced[kind].filter(id => alive.has(id));
+        }
 
         const gone = [...this.removed[kind]];
-        if (gone.length > 0) {
+        if (gone.length > 0 && !doc) {
           if (await deleteRows(kind, gone)) this.removed[kind] = this.removed[kind].filter(id => !gone.includes(id));
           else allOk = false;
         }
       }
+      if (this.hasPlatformPending && !(await this.pushPlatformPending())) allOk = false;
       return allOk;
-    })().finally(() => {
+    })().then(ok => {
+      this.pushFailed = !ok;
+      return ok;
+    }).finally(() => {
       this.pushRunning = null;
       this.saveToStorage();
     });
     return this.pushRunning;
+  }
+
+  // Painel da plataforma: sessões de suporte e ações sem loja do Super Admin logado
+  private async pushPlatformPending(): Promise<boolean> {
+    let allOk = true;
+    for (const id of [...this.platformPending.sessions]) {
+      const session = this.supportSessions.find(x => x.id === id);
+      const drop = (pendingId: string) => {
+        this.platformPending.sessions = this.platformPending.sessions.filter(x => x !== pendingId);
+      };
+      if (!session || session.super_admin_id !== this.syncUserId) {
+        if (!session) drop(id);
+        continue;
+      }
+      if (!isUuid(session.id)) {
+        // sessão anterior à ligação com o banco: ganha identificador novo e o histórico acompanha
+        const oldId = session.id;
+        session.id = newUuid();
+        this.auditLogs.forEach(l => {
+          if (l.record_id === oldId) l.record_id = session.id;
+        });
+        this.platformPending.sessions = this.platformPending.sessions.map(x => (x === oldId ? session.id : x));
+      }
+      const json = JSON.stringify(session);
+      const result = await pushSupportSession(JSON.parse(json));
+      if (result === 'failed') allOk = false;
+      // 'gone': a loja da sessão não existe mais, não há onde gravar
+      else if (JSON.stringify(session) === json) drop(session.id);
+    }
+
+    const pending = new Set(this.platformPending.logs);
+    const logs = this.auditLogs.filter(l => pending.has(l.id) && !l.tenant_id && l.user_id === this.syncUserId);
+    logs.forEach(l => {
+      if (isUuid(l.id)) return;
+      const oldId = l.id;
+      l.id = newUuid();
+      this.platformPending.logs = this.platformPending.logs.map(x => (x === oldId ? l.id : x));
+    });
+    if (logs.length > 0) {
+      if (await pushPlatformLogs(logs.map(l => JSON.parse(JSON.stringify(l))))) {
+        const sent = new Set(logs.map(l => l.id));
+        this.platformPending.logs = this.platformPending.logs.filter(x => !sent.has(x));
+      } else {
+        allOk = false;
+      }
+    }
+    // ids cujo registro não existe mais não têm o que enviar
+    const alive = new Set(this.auditLogs.map(l => l.id));
+    this.platformPending.logs = this.platformPending.logs.filter(x => alive.has(x));
+    return allOk;
+  }
+
+  /**
+   * Recebe do servidor o que pertence ao painel da plataforma: sessões de suporte, ações sem loja e
+   * ações do Super Admin dentro das lojas. O que ainda não foi enviado daqui é preservado.
+   */
+  applyPlatformRecords(remote: { sessions: SupportSession[]; platformLogs: AuditLog[]; tenantLogs: AuditLog[] }) {
+    const pendingSessions = new Set(this.platformPending.sessions);
+    const remoteSessions = new Set(remote.sessions.map(x => x.id));
+    this.supportSessions = [
+      ...this.supportSessions.filter(x => pendingSessions.has(x.id) && !remoteSessions.has(x.id)),
+      ...remote.sessions.filter(x => !pendingSessions.has(x.id)),
+      ...this.supportSessions.filter(x => pendingSessions.has(x.id) && remoteSessions.has(x.id))
+    ].sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at));
+
+    const pendingLogs = new Set(this.platformPending.logs);
+    const incoming = new Map([...remote.platformLogs, ...remote.tenantLogs].map(l => [l.id, l]));
+    // ações sem loja: vale a lista do servidor mais o que ainda está na fila daqui
+    const kept = this.auditLogs.filter(l => l.tenant_id || pendingLogs.has(l.id) || incoming.has(l.id));
+    const known = new Set(kept.map(l => l.id));
+    const added = [...incoming.values()].filter(l => !known.has(l.id));
+    // as ações em lojas já estão no servidor: não voltam para a fila de envio
+    remote.tenantLogs.forEach(l => this.syncedJson.set(`auditLogs:${l.id}`, ''));
+    this.auditLogs = [...added, ...kept].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+    this.saveToStorage();
   }
 
   /** Envia agora o que está na fila (inclusive o que aguardava liberação). Devolve false se algo não pôde ser enviado. */
@@ -1338,38 +1692,106 @@ class ControlphoneStore {
   }
 
   /**
-   * Recebe do servidor a lista atual de uma loja. O que está na fila de envio deste navegador é
-   * preservado; o restante passa a refletir exatamente o que está no banco. Campos que só existem
-   * localmente (ainda sem coluna no servidor) são mantidos.
+   * Recebe do servidor os registros de uma loja. O que está na fila de envio deste navegador é
+   * preservado. Na lista completa, o restante passa a refletir exatamente o que está no banco
+   * (o que o servidor não devolveu foi excluído em outro aparelho). Na lista parcial (`partial`:
+   * só o que mudou desde a última busca), quem não veio continua como está.
+   * Campos que só existem localmente (ainda sem coluna no servidor) são mantidos.
    */
-  applyRemoteRecords(tenantId: string, remote: Partial<Record<SyncKind, SyncRecord[]>>) {
+  applyRemoteRecords(
+    tenantId: string,
+    remote: Partial<Record<SyncKind, SyncRecord[]>>,
+    options: { partial?: SyncKind[]; cursors?: Partial<Record<DocKind, string>>; startedAt?: number } = {}
+  ) {
+    // Resposta de uma busca iniciada antes de um envio deste navegador ainda não conhece esse envio:
+    // o registro enviado nesse intervalo fica como está (a próxima busca traz a versão do servidor)
+    const startedAt = options.startedAt ?? Infinity;
+    const sentMeanwhile = (kind: SyncKind, id: string) => (this.pushedAt.get(`${kind}:${id}`) ?? -1) >= startedAt;
     SYNC_KINDS.forEach(kind => {
       const rows = remote[kind];
       if (!rows) return;
+      const doc = isDocKind(kind);
+      const appendOnly = APPEND_ONLY.includes(kind);
+      const partial = Boolean(options.partial?.includes(kind));
       const local = this.coll(kind);
-      const localById = new Map(local.filter(r => r.tenant_id === tenantId).map(r => [r.id, r]));
+      const mineList = local.filter(r => r.tenant_id === tenantId);
+      const localById = new Map(mineList.map(r => [r.id, r]));
       const remoteIds = new Set(rows.map(r => r.id));
-      const queued = (id: string) => this.unsynced[kind].includes(id) || this.held.has(id);
+      const inQueue = new Set(this.unsynced[kind]);
+      const queued = (id: string) => inQueue.has(id) || this.held.has(id) || sentMeanwhile(kind, id);
+      const removed = new Set(this.removed[kind]);
+      // registro antigo deste navegador que já está no servidor deixa de aguardar envio
+      if (doc && this.legacyPending[kind].length > 0) {
+        this.legacyPending[kind] = this.legacyPending[kind].filter(id => !remoteIds.has(id));
+      }
+      const legacy = new Set(doc ? this.legacyPending[kind] : []);
 
-      const merged = rows
-        .filter(r => !this.removed[kind].includes(r.id))
-        .map(row => {
-          const mine = localById.get(row.id);
-          if (mine && queued(row.id)) return mine; // alteração local ainda não enviada prevalece
-          const next = mine ? Object.assign(mine, this.withoutServerGaps(mine, row)) : row;
-          this.syncedJson.set(`${kind}:${next.id}`, JSON.stringify(next));
-          return next;
-        });
-      // ainda não chegaram ao servidor: registros novos na fila e cadastros antigos que este perfil não pode enviar
-      const pending = local.filter(r => r.tenant_id === tenantId && !remoteIds.has(r.id) && (queued(r.id) || !isUuid(r.id)));
-      // o que o servidor não devolveu mais foi excluído em outro aparelho
-      local.forEach(r => {
-        if (r.tenant_id === tenantId && !remoteIds.has(r.id) && !queued(r.id)) this.syncedJson.delete(`${kind}:${r.id}`);
+      const added: SyncRecord[] = [];
+      rows.forEach(row => {
+        if (removed.has(row.id)) return;
+        const mine = localById.get(row.id);
+        if (mine && queued(row.id)) return; // alteração local ainda não enviada prevalece
+        let next = row;
+        if (mine) {
+          if (doc) {
+            Object.keys(mine).forEach(key => {
+              if (!(key in row)) delete (mine as unknown as Record<string, unknown>)[key];
+            });
+            next = Object.assign(mine, row);
+          } else {
+            next = Object.assign(mine, this.withoutServerGaps(mine, row));
+          }
+        } else {
+          added.push(row);
+        }
+        this.syncedJson.set(`${kind}:${next.id}`, appendOnly ? '' : JSON.stringify(next));
       });
 
-      (this[kind] as SyncRecord[]) = [...pending, ...merged, ...local.filter(r => r.tenant_id !== tenantId)];
+      // Na lista completa só continua aqui o que veio do servidor ou ainda não chegou lá: registros na
+      // fila, registros antigos aguardando envio e cadastros antigos que este perfil não pode enviar
+      const kept = partial
+        ? mineList
+        : mineList.filter(r => {
+            if (removed.has(r.id)) return false;
+            if (remoteIds.has(r.id) || queued(r.id) || legacy.has(r.id) || (!doc && !isUuid(r.id))) return true;
+            this.syncedJson.delete(`${kind}:${r.id}`); // excluído em outro aparelho
+            return false;
+          });
+
+      // mais recente na frente, como as telas esperam; quem empata mantém a ordem que já tinha
+      let merged = [...added, ...kept];
+      if (added.length > 0 || !doc) {
+        const at = new Map(merged.map(r => [r, Date.parse((r as { created_at?: string }).created_at || '')]));
+        const pending = doc ? [] : merged.filter(r => !remoteIds.has(r.id));
+        const sortable = doc ? merged : merged.filter(r => remoteIds.has(r.id));
+        sortable.sort((a, b) => {
+          const ta = at.get(a) as number, tb = at.get(b) as number;
+          return Number.isNaN(ta) || Number.isNaN(tb) ? 0 : tb - ta;
+        });
+        merged = [...pending, ...sortable];
+      }
+      (this[kind] as SyncRecord[]) = [...merged, ...local.filter(r => r.tenant_id !== tenantId)];
+    });
+    Object.entries(options.cursors || {}).forEach(([kind, at]) => {
+      if (at) this.syncCursors[`${tenantId}:${kind}`] = at;
+    });
+    const old = Date.now() - 10 * 60 * 1000;
+    this.pushedAt.forEach((at, key) => {
+      if (at < old) this.pushedAt.delete(key);
     });
     this.saveToStorage();
+  }
+
+  /** Data da última linha de um tipo de documento que este navegador já recebeu do servidor */
+  getSyncCursor(tenantId: string, kind: DocKind): string | undefined {
+    return this.syncCursors[`${tenantId}:${kind}`];
+  }
+
+  /** Quantos registros deste tipo o servidor já confirmou para este navegador (confere com a contagem do banco) */
+  countConfirmed(tenantId: string, kind: DocKind): number {
+    const waiting = new Set(this.legacyPending[kind]);
+    return this.coll(kind).reduce(
+      (n, rec) => (rec.tenant_id === tenantId && !waiting.has(rec.id) && this.syncedJson.has(`${kind}:${rec.id}`) ? n + 1 : n), 0);
   }
 
   // Campo vazio no servidor apaga o valor local, exceto os que o servidor ainda não guarda
@@ -1393,9 +1815,13 @@ class ControlphoneStore {
     // Estoque antigo sobe só pelo navegador do administrador, para não duplicar aparelhos entre aparelhos da equipe
     const isManager = this.isManager(role);
     let adopted = 0;
+    const touched = new Set<unknown>();
     const swap = (rows: unknown[], field: string, oldId: string, newId: string) =>
       (rows as Record<string, unknown>[]).forEach(row => {
-        if (row && row[field] === oldId) row[field] = newId;
+        if (row && row[field] === oldId) {
+          row[field] = newId;
+          touched.add(row);
+        }
       });
     const adopt = (kind: SyncKind, onRename: (oldId: string, newId: string) => void) => {
       this.coll(kind).filter(r => r.tenant_id === tenantId && !isUuid(r.id)).forEach(rec => {
@@ -1444,6 +1870,12 @@ class ControlphoneStore {
           this.markUnsynced('supplierPurchases', p.id);
           adopted++;
         });
+    }
+    // movimentações não são comparadas pelo conteúdo: as que mudaram de referência voltam para a fila
+    if (touched.size > 0) {
+      this.deviceMovements.forEach(m => {
+        if (touched.has(m)) this.syncedJson.delete(`deviceMovements:${m.id}`);
+      });
     }
     if (adopted > 0) this.saveToStorage();
     return adopted;
@@ -1593,7 +2025,7 @@ class ControlphoneStore {
     }
 
     const saleId = uid('sale-');
-    const saleNumber = Math.max(1000, ...this.sales.map(s => s.sale_number)) + 1;
+    const saleNumber = this.nextNumber('sales', payload.tenantId);
     const now = new Date().toISOString();
 
     // 1. Processar itens e baixar estoque
@@ -1875,7 +2307,7 @@ class ControlphoneStore {
     const receivedDeviceId = known ? known.id : newUuid();
     const receivedSnapshot = known ? { ...known } : undefined;
     const saleId = uid('sale-');
-    const saleNumber = Math.max(1000, ...this.sales.map(s => s.sale_number)) + 1;
+    const saleNumber = this.nextNumber('sales', payload.tenantId);
     const soldDev = soldCheck;
     const soldCost = Number(soldDev.acquisition_cost) + Number(soldDev.accumulated_repair_cost);
 
@@ -2244,7 +2676,7 @@ class ControlphoneStore {
     const os: ServiceOrder = {
       id: 'os-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
       tenant_id: p.tenantId,
-      os_number: this.nextOsNumber(),
+      os_number: this.nextNumber('serviceOrders', p.tenantId),
       origin: 'internal',
       device_id: device.id,
       intake_seller_id: p.userId,
@@ -2332,7 +2764,7 @@ class ControlphoneStore {
     const os: ServiceOrder = {
       id: 'os-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
       tenant_id: p.tenantId,
-      os_number: this.nextOsNumber(),
+      os_number: this.nextNumber('serviceOrders', p.tenantId),
       origin: 'external',
       customer_id: p.customerId,
       intake_seller_id: p.userId,
@@ -2879,7 +3311,7 @@ class ControlphoneStore {
     const request: ReturnRequest = {
       id: uid('ret-'),
       tenant_id: p.tenantId,
-      request_number: Math.max(100, ...this.returnRequests.map(r => r.request_number)) + 1,
+      request_number: this.nextNumber('returnRequests', p.tenantId),
       sale_id: sale.id,
       sale_item_id: item.id,
       device_id: item.device_id,
@@ -3560,13 +3992,17 @@ class ControlphoneStore {
   // Sessão de Suporte do Super Admin
   startSupportSession(superAdminId: string, tenantId: string, reason: string): SupportSession {
     const session: SupportSession = {
-      id: 'sup-sess-' + Date.now(),
+      id: this.isRealMode ? newUuid() : 'sup-sess-' + Date.now(),
       super_admin_id: superAdminId,
       target_tenant_id: tenantId,
       started_at: new Date().toISOString(),
       reason
     };
     this.supportSessions.unshift(session);
+    if (this.isRealMode) {
+      this.platformPending.sessions.push(session.id);
+      this.platformDirty = true;
+    }
     this.addAuditLog({
       tenant_id: tenantId,
       user_id: superAdminId,
@@ -3584,6 +4020,10 @@ class ControlphoneStore {
     const sess = this.supportSessions.find(s => s.id === sessionId);
     if (sess) {
       sess.ended_at = new Date().toISOString();
+      if (this.isRealMode) {
+        if (!this.platformPending.sessions.includes(sess.id)) this.platformPending.sessions.push(sess.id);
+        this.platformDirty = true;
+      }
       this.addAuditLog({
         tenant_id: sess.target_tenant_id,
         user_id: sess.super_admin_id,

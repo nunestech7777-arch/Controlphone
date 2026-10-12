@@ -1,12 +1,15 @@
 // ============================================================================
-// CONTROLPHONE — GRAVAÇÃO NO BANCO DAS ALTERAÇÕES DE LOJA (MODO REAL)
-// Usado pelo store depois de aplicar a alteração na tela. As regras de
-// segurança do banco só aceitam estas gravações do Super Administrador.
-// Em caso de falha, avisa e pede para recarregar: o banco é a fonte da verdade.
+// CONTROLPHONE — GRAVAÇÃO NO BANCO (MODO REAL)
+// Usado pelo store depois de aplicar a alteração na tela.
+//   - Dados da loja (identidade visual, configurações, modelos): só o Super
+//     Administrador grava; em caso de falha, avisa e pede para recarregar.
+//   - Cadastros (clientes, fornecedores, estoque): uma linha por registro.
+//   - Módulos operacionais (vendas, assistência, financeiro...): um documento
+//     por registro na tabela tenant_records.
 // ============================================================================
 
 import { supabase } from './supabase';
-import { Accessory, Customer, Device, Gift, Supplier, SupplierPurchase, Tenant, TenantDocument, TenantDocumentType, TenantSettings, TenantTheme } from '../types';
+import { Accessory, AuditLog, Customer, Device, Gift, Supplier, SupplierPurchase, SupportSession, Tenant, TenantDocument, TenantDocumentType, TenantSettings, TenantTheme } from '../types';
 
 const orNull = <T>(v: T | undefined | null | ''): T | null => (v === undefined || v === null || v === '' ? null : v);
 
@@ -249,4 +252,102 @@ export async function deleteRows(kind: SyncTable, ids: string[]): Promise<boolea
   const { error } = await supabase.from(table).delete().in('id', ids);
   if (error) console.error(`Falha ao excluir em ${table}:`, error.message);
   return !error;
+}
+
+// ---------------------------------------------------------------------------
+// MÓDULOS OPERACIONAIS (tabela tenant_records, migration 17)
+// Cada registro do store sobe como documento JSON. Quem grava e a data da
+// gravação são preenchidos pelo servidor.
+// ---------------------------------------------------------------------------
+
+export const RECORDS_TABLE = 'tenant_records';
+
+export type DocRow = { id: string; tenant_id: string; json: string };
+
+/** Grava (cria ou atualiza) documentos de um tipo. Devolve false se o servidor recusou ou não respondeu. */
+export async function pushDocs(kind: string, docs: DocRow[]): Promise<boolean> {
+  if (docs.length === 0) return true;
+  const rows = docs.map(d => ({ tenant_id: d.tenant_id, kind, id: d.id, data: JSON.parse(d.json) }));
+  if (kind === 'auditLogs') return insertOnly(kind, rows);
+  // Todo perfil que altera um destes tipos também pode incluir, então o "criar ou atualizar" basta
+  // (não precisa da segunda tentativa só com atualização usada em pushRows).
+  const { error } = await supabase.from(RECORDS_TABLE).upsert(rows, { onConflict: 'tenant_id,kind,id' });
+  if (error) console.error(`Falha ao salvar ${kind}:`, error.message);
+  return !error;
+}
+
+// O histórico de atividades só aceita inclusão, e vendedor e técnico não podem lê-lo. O "incluir
+// ignorando repetidos" do banco exige permissão de leitura e é recusado (42501) para eles; por isso
+// vai como inclusão simples. Se algum registro do lote já tinha chegado (resposta perdida no envio
+// anterior), o lote é refeito um a um e o repetido conta como enviado.
+async function insertOnly(kind: string, rows: Record<string, unknown>[]): Promise<boolean> {
+  const { error } = await supabase.from(RECORDS_TABLE).insert(rows);
+  if (!error) return true;
+  if (error.code === '23505') {
+    const results = await Promise.all(rows.map(row => supabase.from(RECORDS_TABLE).insert(row)));
+    const failed = results.find(res => res.error && res.error.code !== '23505');
+    if (!failed) return true;
+    console.error(`Falha ao salvar ${kind}:`, failed.error?.message);
+    return false;
+  }
+  console.error(`Falha ao salvar ${kind}:`, error.message);
+  return false;
+}
+
+/** Reserva no servidor os próximos números da loja (venda, OS ou solicitação). Devolve null se não conseguiu. */
+export async function reserveNumbers(kind: string, count: number, tenantId: string): Promise<number[] | null> {
+  const { data, error } = await supabase.rpc('reserve_record_numbers', { p_kind: kind, p_count: count, p_tenant_id: tenantId });
+  if (error || !Array.isArray(data)) return null;
+  return data.map(Number).filter(n => Number.isInteger(n) && n > 0);
+}
+
+// ---------------------------------------------------------------------------
+// PAINEL DA PLATAFORMA (Super Admin): sessões de suporte e ações sem loja
+// (tabelas support_sessions e audit_logs, regras na migration 18)
+// ---------------------------------------------------------------------------
+
+/** Grava a abertura ou o encerramento de uma sessão de suporte. 'gone' = a loja não existe mais. */
+export async function pushSupportSession(session: SupportSession): Promise<'ok' | 'gone' | 'failed'> {
+  const { error } = await supabase.from('support_sessions').upsert({
+    id: session.id,
+    super_admin_id: session.super_admin_id,
+    target_tenant_id: session.target_tenant_id,
+    started_at: session.started_at,
+    ended_at: orNull(session.ended_at),
+    reason: session.reason || 'Não informado'
+  }, { onConflict: 'id' });
+  if (!error) return 'ok';
+  if (error.code === '23503') return 'gone';
+  console.error('Falha ao salvar a sessão de suporte:', error.message);
+  return 'failed';
+}
+
+const platformLogRow = (log: AuditLog) => ({
+  id: log.id,
+  tenant_id: null,
+  user_id: orNull(log.user_id),
+  user_email: orNull(log.user_email),
+  user_role: orNull(log.user_role),
+  action: (log.action || '').slice(0, 100),
+  module: (log.module || '').slice(0, 100),
+  record_id: orNull(log.record_id ? String(log.record_id).slice(0, 255) : undefined),
+  details: log.details ?? null,
+  created_at: log.created_at
+});
+
+/** Inclui no histórico do servidor as ações da plataforma sem loja. Registro que já chegou conta como enviado. */
+export async function pushPlatformLogs(logs: AuditLog[]): Promise<boolean> {
+  if (logs.length === 0) return true;
+  const rows = logs.map(platformLogRow);
+  const { error } = await supabase.from('audit_logs').insert(rows);
+  if (!error) return true;
+  if (error.code === '23505') {
+    const results = await Promise.all(rows.map(row => supabase.from('audit_logs').insert(row)));
+    const failed = results.find(res => res.error && res.error.code !== '23505');
+    if (!failed) return true;
+    console.error('Falha ao salvar o histórico da plataforma:', failed.error?.message);
+    return false;
+  }
+  console.error('Falha ao salvar o histórico da plataforma:', error.message);
+  return false;
 }

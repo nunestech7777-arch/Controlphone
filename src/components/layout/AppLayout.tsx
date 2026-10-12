@@ -63,18 +63,11 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentView, onNavigate, c
           onMenuClick={() => setIsMenuOpen(true)}
         />
 
-        {/* Aviso da fase de transição: só conta, loja e equipe já vêm do banco de dados */}
-        {!isDemoMode && (
-          <div className="bg-amber-50 border-b border-amber-200 text-amber-800 text-[11px] font-semibold px-4 sm:px-6 py-2">
-            Lojas, usuários, clientes, fornecedores e estoque já são gravados no servidor. Vendas, assistência, garantias e financeiro ainda ficam salvos apenas neste navegador.
-          </div>
-        )}
-
-        {/* Cadastro feito sem conexão: fica na fila e sobe sozinho quando o servidor responder */}
-        {!isDemoMode && store.hasUnsynced && (
+        {/* O envio ao servidor falhou (sem conexão, por exemplo): fica na fila e sobe sozinho quando o servidor responder */}
+        {!isDemoMode && store.hasUnsynced && store.pushFailed && (
           <div role="status" className="bg-sky-50 border-b border-sky-200 text-sky-900 text-[11px] font-semibold px-4 sm:px-6 py-2">
-            Há alterações de clientes, fornecedores ou estoque aguardando envio ao servidor. Elas serão enviadas
-            automaticamente quando a conexão voltar; até lá, não aparecem nos outros aparelhos da loja.
+            Há alterações aguardando envio ao servidor. Elas serão enviadas automaticamente quando a conexão voltar;
+            até lá, não aparecem nos outros aparelhos da loja.
           </div>
         )}
 

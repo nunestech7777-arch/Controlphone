@@ -8,7 +8,7 @@ import { store } from '../lib/store';
 import { hexToRgbString, resolveThemeColors } from '../lib/tenantSetup';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { loadRealIdentity, translateAuthError } from '../lib/realSession';
-import { syncOnFocus, syncTenantRecords, watchTenantRecords } from '../lib/realData';
+import { syncOnFocus, syncPlatformOnFocus, syncPlatformRecords, syncTenantRecords, watchTenantRecords } from '../lib/realData';
 import { LoginPage } from '../pages/auth/LoginPage';
 
 const DEMO_USER_ID = 'user-admin-01';
@@ -186,6 +186,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [isRealSession, effectiveTenantId, isSupportMode, currentUser.id, currentUser.role]);
+
+  // Painel da plataforma (Super Admin fora do modo suporte): sessões de suporte e histórico de ações
+  // também ficam no banco. Carrega ao entrar, ao sair de uma sessão de suporte e ao voltar para a aba.
+  const isPlatformSession = isRealSession && currentUser.role === 'super_admin' && !isSupportMode;
+  useEffect(() => {
+    if (!isPlatformSession) return;
+    void syncPlatformRecords();
+    const onVisible = () => { if (document.visibilityState === 'visible') syncPlatformOnFocus(); };
+    window.addEventListener('focus', syncPlatformOnFocus);
+    window.addEventListener('online', syncPlatformOnFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', syncPlatformOnFocus);
+      window.removeEventListener('online', syncPlatformOnFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [isPlatformSession, currentUser.id]);
 
   // Atualizar variáveis CSS globais de tema (cores específicas herdam das principais quando ausentes)
   useEffect(() => {
