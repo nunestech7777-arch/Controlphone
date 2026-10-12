@@ -10,6 +10,7 @@ import { generateReceiptPDF } from '../../lib/pdf/generateReceiptPDF';
 import { Sale } from '../../types';
 import { SaleDetailModal } from '../../components/shared/SaleDetailModal';
 import { consumeIntent } from '../../lib/navIntent';
+import { formatBRL } from '../../lib/labels';
 
 export const SalesManagement: React.FC = () => {
   const { currentTenant, currentUser, currentTheme } = useAuth();
@@ -162,10 +163,10 @@ export const SalesManagement: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 font-black text-slate-900 whitespace-nowrap">
-                      R$ {Number(sale.total_amount).toFixed(2)}
+                      {formatBRL(Number(sale.total_amount))}
                     </td>
                     <td className="py-3.5 px-4 font-bold text-emerald-600 whitespace-nowrap">
-                      {isCancelled ? '—' : `R$ ${Number(sale.gross_profit).toFixed(2)}`}
+                      {isCancelled ? '—' : `${formatBRL(Number(sale.gross_profit))}`}
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       {isCancelled ? (

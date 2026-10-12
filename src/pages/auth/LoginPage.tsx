@@ -3,21 +3,39 @@
 // ============================================================================
 
 import React, { useEffect, useState } from 'react';
-import { Eye, EyeOff, KeyRound, Lock, LogIn, Mail, ShieldCheck, User } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, Lock, LogIn, Mail, ShieldCheck, User, type LucideIcon } from 'lucide-react';
+import sideImage from '../../assets/login-side.jpg';
 import { adminApi } from '../../lib/adminApi';
 import { passwordIssue } from '../../lib/tenantSetup';
 
 interface LoginPageProps {
   /** Devolve a mensagem de erro, ou null quando entrou */
   onSignIn: (email: string, password: string) => Promise<string | null>;
-  onEnterDemo: () => void;
 }
 
-const inputCls =
-  'w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-10 py-3 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-600';
-const labelCls = 'block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5';
+const fieldCls =
+  'flex items-center w-full h-12 gap-2.5 pl-5 pr-4 rounded-full border border-slate-300/70 bg-white transition-colors focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20';
+const inputCls = 'w-full h-full min-w-0 bg-transparent text-sm text-slate-800 placeholder-slate-400 outline-none';
 
-export const LoginPage: React.FC<LoginPageProps> = ({ onSignIn, onEnterDemo }) => {
+interface FieldProps extends React.InputHTMLAttributes<HTMLInputElement> {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  /** Botão à direita do campo (ex.: mostrar/ocultar senha) */
+  trailing?: React.ReactNode;
+}
+
+// Campo em formato de pílula: ícone, input e ação opcional. O rótulo fica só para leitores de tela.
+const Field: React.FC<FieldProps> = ({ id, label, icon: Icon, trailing, ...input }) => (
+  <div className={fieldCls}>
+    <label htmlFor={id} className="sr-only">{label}</label>
+    <Icon className="w-4 h-4 text-slate-400 shrink-0" />
+    <input id={id} {...input} className={inputCls} />
+    {trailing}
+  </div>
+);
+
+export const LoginPage: React.FC<LoginPageProps> = ({ onSignIn }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -93,133 +111,114 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSignIn, onEnterDemo }) =
   };
 
   return (
-    <div className="min-h-dvh flex items-center justify-center bg-[#0B0F17] p-4">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-6">
-          <h1 className="text-2xl font-extrabold tracking-tight text-white">Controlphone</h1>
-          <p className="text-xs text-slate-400 font-medium mt-1">Gestão completa para lojas de celulares</p>
-        </div>
+    <div className="min-h-dvh flex bg-white">
+      <div className="relative hidden md:block md:w-1/2 lg:w-[45%] bg-gradient-to-br from-slate-100 to-blue-100">
+        {/* A foto tem fundo branco: o multiply faz o branco sumir no degradê do painel */}
+        <img src={sideImage} alt="" className="absolute inset-0 w-full h-full object-contain p-12 lg:p-16 mix-blend-multiply" />
+      </div>
 
-        <form onSubmit={needsSetup ? handleSetup : handleSubmit} className="bg-white rounded-3xl p-6 sm:p-7 shadow-2xl space-y-4">
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-10">
+        <form onSubmit={needsSetup ? handleSetup : handleSubmit} className="w-full max-w-sm flex flex-col items-center">
           {needsSetup ? (
-            <div>
-              <h2 className="text-base font-extrabold text-slate-800 flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-blue-600" /> Configuração inicial
-              </h2>
-              <p className="text-xs text-slate-500 font-medium mt-0.5">
+            <>
+              <h1 className="text-3xl font-medium text-slate-900 flex items-center gap-2 text-center">
+                <ShieldCheck className="w-7 h-7 text-brand-500 shrink-0" /> Configuração inicial
+              </h1>
+              <p className="text-sm text-slate-500 mt-3 text-center">
                 Crie a conta do Super Administrador. Ela é única e é por ela que as lojas são criadas.
               </p>
-            </div>
+            </>
           ) : (
-            <div>
-              <h2 className="text-base font-extrabold text-slate-800">Entrar</h2>
-              <p className="text-xs text-slate-500 font-medium mt-0.5">Use o e-mail e a senha da sua conta.</p>
-            </div>
-          )}
-
-          {needsSetup && (
-            <div>
-              <label htmlFor="setup-name" className={labelCls}>Seu nome</label>
-              <div className="relative">
-                <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  id="setup-name"
-                  type="text"
-                  autoComplete="name"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Nome completo"
-                  className={inputCls}
-                />
-              </div>
-            </div>
-          )}
-
-          <div>
-            <label htmlFor="login-email" className={labelCls}>E-mail</label>
-            <div className="relative">
-              <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                id="login-email"
-                type="email"
-                autoComplete="username"
-                autoFocus
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="voce@sualoja.com.br"
-                className={inputCls}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label htmlFor="login-password" className={labelCls}>Senha</label>
-            <div className="relative">
-              <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                id="login-password"
-                type={showPassword ? 'text' : 'password'}
-                autoComplete={needsSetup ? 'new-password' : 'current-password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={needsSetup ? 'Mínimo de 8 caracteres, com letras e números' : 'Sua senha'}
-                className={inputCls}
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(v => !v)}
-                title={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
-                aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
-              >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-
-          {needsSetup && (
             <>
-              <div>
-                <label htmlFor="setup-confirm" className={labelCls}>Confirmar senha</label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    id="setup-confirm"
-                    type={showPassword ? 'text' : 'password'}
-                    autoComplete="new-password"
-                    value={confirm}
-                    onChange={(e) => setConfirm(e.target.value)}
-                    placeholder="Repita a senha"
-                    className={inputCls}
-                  />
-                </div>
-              </div>
-              <div>
-                <label htmlFor="setup-key" className={labelCls}>Código de instalação</label>
-                <div className="relative">
-                  <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    id="setup-key"
-                    type="password"
-                    autoComplete="off"
-                    value={setupKey}
-                    onChange={(e) => setSetupKey(e.target.value)}
-                    placeholder="Definido na instalação do servidor"
-                    className={inputCls}
-                  />
-                </div>
-              </div>
+              <h1 className="text-4xl font-medium text-slate-900">Entrar</h1>
+              <p className="text-sm text-slate-500 mt-3 text-center">
+                Bem-vindo de volta! Use o e-mail e a senha da sua conta.
+              </p>
             </>
           )}
 
+          <div className="w-full mt-8 space-y-5">
+            {needsSetup && (
+              <Field
+                id="setup-name"
+                label="Seu nome"
+                icon={User}
+                type="text"
+                autoComplete="name"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                placeholder="Nome completo"
+              />
+            )}
+
+            <Field
+              id="login-email"
+              label="E-mail"
+              icon={Mail}
+              type="email"
+              autoComplete="username"
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="E-mail"
+            />
+
+            <Field
+              id="login-password"
+              label="Senha"
+              icon={Lock}
+              type={showPassword ? 'text' : 'password'}
+              autoComplete={needsSetup ? 'new-password' : 'current-password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder={needsSetup ? 'Senha (mín. 8, com letras e números)' : 'Senha'}
+              trailing={
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(v => !v)}
+                  title={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  className="text-slate-400 hover:text-slate-700 shrink-0"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              }
+            />
+
+            {needsSetup && (
+              <>
+                <Field
+                  id="setup-confirm"
+                  label="Confirmar senha"
+                  icon={Lock}
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  placeholder="Repita a senha"
+                />
+                <Field
+                  id="setup-key"
+                  label="Código de instalação"
+                  icon={KeyRound}
+                  type="password"
+                  autoComplete="off"
+                  value={setupKey}
+                  onChange={(e) => setSetupKey(e.target.value)}
+                  placeholder="Código de instalação do servidor"
+                />
+              </>
+            )}
+          </div>
+
           {!needsSetup && serverNote && (
-            <p className="text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
+            <p className="w-full mt-5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-2.5">
               {serverNote}
             </p>
           )}
 
           {error && (
-            <p role="alert" className="text-xs font-semibold text-rose-600 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2">
+            <p role="alert" className="w-full mt-5 text-xs font-semibold text-rose-600 bg-rose-50 border border-rose-100 rounded-2xl px-4 py-2.5">
               {error}
             </p>
           )}
@@ -227,7 +226,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSignIn, onEnterDemo }) =
           <button
             type="submit"
             disabled={isSubmitting || checking}
-            className="w-full bg-[#1845E8] hover:bg-[#1339c4] disabled:opacity-60 text-white font-bold text-sm py-3 rounded-xl inline-flex items-center justify-center gap-2 transition-colors"
+            className="mt-8 w-full h-11 rounded-full text-white text-sm font-semibold bg-brand-500 hover:opacity-90 disabled:opacity-60 inline-flex items-center justify-center gap-2 transition-opacity"
           >
             <LogIn className="w-4 h-4" />
             {needsSetup
@@ -235,16 +234,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSignIn, onEnterDemo }) =
               : (isSubmitting ? 'Entrando...' : 'Entrar')}
           </button>
         </form>
-
-        <div className="text-center mt-5">
-          <button
-            type="button"
-            onClick={onEnterDemo}
-            className="text-xs font-semibold text-slate-400 hover:text-white underline underline-offset-4"
-          >
-            Ver o sistema com dados de demonstração
-          </button>
-        </div>
       </div>
     </div>
   );

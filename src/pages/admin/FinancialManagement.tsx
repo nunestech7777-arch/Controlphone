@@ -9,6 +9,7 @@ import { DollarSign, Plus, X, Paperclip } from 'lucide-react';
 import { store, toLocalDay } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Expense, ExpenseCategory, PaymentMethod } from '../../types';
+import { formatBRL } from '../../lib/labels';
 
 type ExpenseFilter = 'all' | 'paid' | 'pending' | 'overdue';
 
@@ -185,7 +186,7 @@ export const FinancialManagement: React.FC = () => {
         <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
           <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Faturamento</span>
           <span className="text-xl font-black text-slate-900 mt-1 block">
-            R$ {totalRevenue.toFixed(2)}
+            {formatBRL(totalRevenue)}
           </span>
           <p className="text-[10px] text-slate-500 mt-0.5">Vendas e serviços recebidos</p>
         </div>
@@ -193,7 +194,7 @@ export const FinancialManagement: React.FC = () => {
         <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
           <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">(-) Custo dos Produtos Vendidos</span>
           <span className="text-xl font-black text-rose-600 mt-1 block">
-            R$ {totalProductCost.toFixed(2)}
+            {formatBRL(totalProductCost)}
           </span>
           <p className="text-[10px] text-slate-500 mt-0.5">Compra dos aparelhos + reparos</p>
         </div>
@@ -201,7 +202,7 @@ export const FinancialManagement: React.FC = () => {
         <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
           <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">(=) Lucro das Vendas</span>
           <span className="text-xl font-black text-blue-600 mt-1 block">
-            R$ {grossProfit.toFixed(2)}
+            {formatBRL(grossProfit)}
           </span>
           <p className="text-[10px] text-slate-500 mt-0.5">
             Margem: {totalRevenue > 0 ? ((grossProfit / totalRevenue) * 100).toFixed(1) : '0'}%
@@ -211,9 +212,9 @@ export const FinancialManagement: React.FC = () => {
         <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
           <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">(=) Lucro Final</span>
           <span className={`text-xl font-black mt-1 block ${netProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-            R$ {netProfit.toFixed(2)}
+            {formatBRL(netProfit)}
           </span>
-          <p className="text-[10px] text-slate-500 mt-0.5">Após deduzir R$ {totalPaidExpenses.toFixed(2)} em despesas</p>
+          <p className="text-[10px] text-slate-500 mt-0.5">Após deduzir {formatBRL(totalPaidExpenses)} em despesas</p>
         </div>
       </div>
 
@@ -222,18 +223,18 @@ export const FinancialManagement: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className={smallCard}>
           <span className={smallLabel}>Saídas Pagas</span>
-          <span className="text-lg font-black text-slate-900 mt-1 block">R$ {totalPaidExpenses.toFixed(2)}</span>
+          <span className="text-lg font-black text-slate-900 mt-1 block">{formatBRL(totalPaidExpenses)}</span>
           <p className="text-[10px] text-slate-500 mt-0.5">Já deduzidas do lucro líquido</p>
         </div>
         <div className={smallCard}>
           <span className={smallLabel}>A Pagar (Pendentes)</span>
-          <span className="text-lg font-black text-amber-600 mt-1 block">R$ {totalPending.toFixed(2)}</span>
+          <span className="text-lg font-black text-amber-600 mt-1 block">{formatBRL(totalPending)}</span>
           <p className="text-[10px] text-slate-500 mt-0.5">Ainda não entram no resultado</p>
         </div>
         <div className={smallCard}>
           <span className={smallLabel}>Vencidas</span>
           <span className={`text-lg font-black mt-1 block ${totalOverdue > 0 ? 'text-rose-600' : 'text-slate-900'}`}>
-            R$ {totalOverdue.toFixed(2)}
+            {formatBRL(totalOverdue)}
           </span>
           <p className="text-[10px] text-slate-500 mt-0.5">Pendentes com vencimento anterior a hoje</p>
         </div>
@@ -292,7 +293,7 @@ export const FinancialManagement: React.FC = () => {
                     {METHOD_LABELS[(exp.status === 'paid' ? exp.paid_method : undefined) || exp.payment_method || 'pix'] || '—'}
                   </td>
                   <td className="py-3.5 px-4 font-extrabold text-slate-900 whitespace-nowrap text-right">
-                    R$ {Number(exp.amount).toFixed(2)}
+                    {formatBRL(Number(exp.amount))}
                   </td>
                   <td className="py-3.5 px-4 text-center">
                     <span className={`inline-block whitespace-nowrap px-2.5 py-1 rounded-full text-[10px] font-bold ${

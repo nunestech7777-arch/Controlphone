@@ -11,6 +11,8 @@ import { IntakeChecklist } from '../../lib/assistanceChecklist';
 import { getServiceOrderDocument } from '../../lib/pdf/assistanceDocuments';
 import { downloadBuiltDocument, viewBuiltDocument } from '../../lib/pdf/documentActions';
 import { ServiceOrder, PaymentMethod } from '../../types';
+import { OS_STATUS_LABELS } from '../../lib/labels';
+import { formatBRL } from '../../lib/labels';
 
 export const SellerOSIntake: React.FC = () => {
   const { currentTenant, currentUser, currentTheme } = useAuth();
@@ -48,7 +50,7 @@ export const SellerOSIntake: React.FC = () => {
     e.preventDefault();
     if (!customerId || !model || !defect) return;
 
-    const created = store.createServiceOrder({
+    const result = store.createServiceOrder({
       tenantId,
       customerId,
       sellerId: currentUser.id,
@@ -59,10 +61,14 @@ export const SellerOSIntake: React.FC = () => {
       physicalCondition: condition,
       checklist
     });
+    if (!result.ok || !result.order) {
+      alert(result.error || 'Não foi possível abrir a ordem de serviço.');
+      return;
+    }
 
-    // A Ordem de Serviço (contrato com o cliente) é gerada automaticamente ao abrir a assistência
+    // Ordem de Serviço gerada automaticamente na entrada do aparelho
     if (currentTenant) {
-      const built = getServiceOrderDocument({ os: created, tenant: currentTenant, theme: currentTheme });
+      const built = getServiceOrderDocument({ os: result.order, tenant: currentTenant, theme: currentTheme });
       void downloadBuiltDocument(built);
     }
 
@@ -76,27 +82,54 @@ export const SellerOSIntake: React.FC = () => {
   };
 
   const handleApproveQuote = (os: ServiceOrder, approved: boolean) => {
-    store.updateClientQuoteApproval({
+    let rejectionReason: string | undefined;
+    if (!approved) {
+      const typed = window.prompt(`Motivo da recusa do orçamento da OS #${os.os_number}:`);
+      if (typed === null) return;
+      if (!typed.trim()) {
+        alert('Informe o motivo da recusa.');
+        return;
+      }
+      rejectionReason = typed.trim();
+    }
+    const saved = store.updateClientQuoteApproval({
       tenantId,
       osId: os.id,
       sellerId: currentUser.id,
       approved,
-      rejectionReason: approved ? undefined : 'Cliente achou o valor acima do esperado'
+      rejectionReason
     });
-    alert(approved ? 'Orçamento aprovado pelo cliente! Encaminhado para execução técnica.' : 'Orçamento recusado.');
+    if (!saved) {
+      alert('Não foi possível registrar: esta ordem não está aguardando a resposta do cliente.');
+      return;
+    }
+    alert(approved
+      ? 'Orçamento aprovado pelo cliente! Encaminhado para execução técnica.'
+      : 'Orçamento recusado. Devolva o aparelho ao cliente para encerrar a ordem.');
+  };
+
+  const handleReturnRejected = (os: ServiceOrder) => {
+    if (!window.confirm(`Confirmar a devolução do aparelho da OS #${os.os_number} ao cliente, sem reparo?`)) return;
+    const result = store.returnRejectedOrder({ tenantId, osId: os.id, userId: currentUser.id });
+    if (!result.ok) alert(result.error);
   };
 
   const handleDeliverAndCheckout = (e: React.FormEvent) => {
     e.preventDefault();
     if (!checkoutOS) return;
 
-    store.sellerCheckoutServiceOrder({
+    const delivered = store.sellerCheckoutServiceOrder({
       tenantId,
       osId: checkoutOS.id,
       sellerId: currentUser.id,
       paymentMethod,
       paidAmount: Number(checkoutOS.client_quote_amount) || 0
     });
+    if (!delivered) {
+      alert('Não foi possível entregar: esta ordem não está aguardando retirada.');
+      setCheckoutOS(null);
+      return;
+    }
 
     alert(`Aparelho da OS #${checkoutOS.os_number} entregue ao cliente e pagamento registrado com sucesso!`);
     setCheckoutOS(null);
@@ -168,7 +201,7 @@ export const SellerOSIntake: React.FC = () => {
                       <p className="text-[11px] text-slate-500 truncate">{os.reported_defect}</p>
                     </td>
                     <td className="py-3.5 px-4 font-black text-blue-600">
-                      {os.client_quote_amount ? `R$ ${Number(os.client_quote_amount).toFixed(2)}` : (
+                      {os.client_quote_amount ? `${formatBRL(Number(os.client_quote_amount))}` : (
                         <span className="text-slate-400 font-normal">Aguardando Avaliação</span>
                       )}
                     </td>
@@ -182,7 +215,7 @@ export const SellerOSIntake: React.FC = () => {
                           ? 'bg-slate-100 text-slate-600'
                           : 'bg-amber-50 text-amber-700'
                       }`}>
-                        {os.status === 'ready_for_pickup' ? 'Pronto p/ Retirada' : os.status}
+                        {os.closed_at && os.status === 'rejected' ? 'Recusado e devolvido' : OS_STATUS_LABELS[os.status] || os.status}
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-right space-x-2 whitespace-nowrap">
@@ -212,6 +245,15 @@ export const SellerOSIntake: React.FC = () => {
                             Recusou
                           </button>
                         </div>
+                      )}
+
+                      {os.status === 'rejected' && !os.closed_at && (
+                        <button
+                          onClick={() => handleReturnRejected(os)}
+                          className="px-2.5 py-1 rounded-xl bg-slate-800 text-white font-bold text-[11px]"
+                        >
+                          Devolver ao Cliente
+                        </button>
                       )}
 
                       {os.status === 'ready_for_pickup' && (
@@ -360,7 +402,7 @@ export const SellerOSIntake: React.FC = () => {
               <div className="bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100 flex justify-between items-center">
                 <span className="font-bold text-emerald-900">Total a Cobrar:</span>
                 <span className="text-2xl font-black text-emerald-600">
-                  R$ {Number(checkoutOS.client_quote_amount).toFixed(2)}
+                  {formatBRL(Number(checkoutOS.client_quote_amount))}
                 </span>
               </div>
 

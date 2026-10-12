@@ -7,6 +7,8 @@ import { Wrench, CheckCircle2, Search, X, FileText, Smartphone } from 'lucide-re
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { ServiceOrder } from '../../types';
+import { OS_STATUS_LABELS } from '../../lib/labels';
+import { formatBRL } from '../../lib/labels';
 
 export const TechnicianOSQueue: React.FC = () => {
   const { currentTenant, currentUser } = useAuth();
@@ -36,7 +38,7 @@ export const TechnicianOSQueue: React.FC = () => {
     e.preventDefault();
     if (!diagnosisModalOS || !diagnosis) return;
 
-    store.updateServiceOrderDiagnosis({
+    const saved = store.updateServiceOrderDiagnosis({
       tenantId,
       osId: diagnosisModalOS.id,
       technicianId: currentUser.id,
@@ -48,8 +50,12 @@ export const TechnicianOSQueue: React.FC = () => {
       serviceNeeded,
       technicalNotes
     });
+    if (!saved) {
+      alert('Não foi possível lançar o diagnóstico: esta ordem já saiu da etapa de diagnóstico.');
+      return;
+    }
 
-    alert('Diagnóstico e custos técnicos lançados! O administrador foi notificado para definir o orçamento comercial.');
+    alert('Diagnóstico e custos técnicos lançados! A ordem aguarda o administrador definir o orçamento.');
     setDiagnosisModalOS(null);
     setDiagnosis('');
     setPartsCost('');
@@ -57,12 +63,16 @@ export const TechnicianOSQueue: React.FC = () => {
   };
 
   const handleMarkReady = (os: ServiceOrder) => {
-    store.markServiceOrderReady({
+    const ready = store.markServiceOrderReady({
       tenantId,
       osId: os.id,
       technicianId: currentUser.id
     });
-    alert(`OS #${os.os_number} marcada como pronta para retirada! O vendedor no balcão foi notificado.`);
+    if (!ready) {
+      alert('Não foi possível concluir: esta ordem não está em manutenção.');
+      return;
+    }
+    alert(`OS #${os.os_number} marcada como pronta para retirada.`);
   };
 
   return (
@@ -127,14 +137,14 @@ export const TechnicianOSQueue: React.FC = () => {
                     )}
                   </td>
                   <td className="py-3.5 px-4 font-bold text-slate-700">
-                    R$ {Number(os.technician_parts_cost).toFixed(2)}
+                    {formatBRL(Number(os.technician_parts_cost))}
                   </td>
                   <td className="py-3.5 px-4 font-bold text-slate-700">
-                    R$ {Number(os.technician_service_cost).toFixed(2)}
+                    {formatBRL(Number(os.technician_service_cost))}
                   </td>
                   <td className="py-3.5 px-4 text-center">
-                    <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
-                      {os.status}
+                    <span className="inline-block whitespace-nowrap px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
+                      {OS_STATUS_LABELS[os.status] || os.status}
                     </span>
                   </td>
                   <td className="py-3.5 px-4 text-right space-x-2">

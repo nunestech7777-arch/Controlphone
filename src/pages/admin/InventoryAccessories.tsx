@@ -7,6 +7,7 @@ import { Package, Gift as GiftIcon, Plus, Search, X } from 'lucide-react';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Accessory, Gift } from '../../types';
+import { formatBRL } from '../../lib/labels';
 
 export const InventoryAccessories: React.FC = () => {
   const { currentTenant, currentUser } = useAuth();
@@ -90,6 +91,7 @@ export const InventoryAccessories: React.FC = () => {
     setIsModalOpen(false);
     setName('');
     setCategory('');
+    setQuantity('10');
     setUnitCost('');
     setSalePrice('');
     setSupplierId('');
@@ -193,10 +195,10 @@ export const InventoryAccessories: React.FC = () => {
                         </span>
                       </td>
                       <td className="py-3.5 px-4 font-semibold text-slate-700">
-                        R$ {Number(acc.unit_cost).toFixed(2)}
+                        {formatBRL(Number(acc.unit_cost))}
                       </td>
                       <td className="py-3.5 px-4 font-black text-blue-600">
-                        R$ {Number(acc.sale_price).toFixed(2)}
+                        {formatBRL(Number(acc.sale_price))}
                       </td>
                     </tr>
                   ))}
@@ -220,7 +222,7 @@ export const InventoryAccessories: React.FC = () => {
                         </span>
                       </td>
                       <td className="py-3.5 px-4 font-bold text-slate-800">
-                        R$ {Number(gift.unit_cost).toFixed(2)} (Custo da loja)
+                        {formatBRL(Number(gift.unit_cost))} (Custo da loja)
                       </td>
                       <td className="py-3.5 px-4 font-black text-emerald-600">
                         R$ 0,00 (Gratuito)

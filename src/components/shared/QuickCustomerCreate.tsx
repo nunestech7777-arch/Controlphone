@@ -21,31 +21,14 @@ export const QuickCustomerCreate: React.FC<QuickCustomerCreateProps> = ({ tenant
   const [error, setError] = useState('');
 
   const handleSave = () => {
-    if (!name.trim() || !phone.trim()) {
-      setError('Informe nome e telefone do cliente.');
+    const result = store.saveCustomer({
+      tenantId, userId: currentUser.id, data: { name, phone, cpf }, origin: 'cadastro rápido na venda'
+    });
+    if (!result.ok || !result.data) {
+      setError(result.error || 'Não foi possível cadastrar o cliente.');
       return;
     }
-    const id = 'cust-' + Date.now();
-    store.customers.unshift({
-      id,
-      tenant_id: tenantId,
-      name: name.trim(),
-      phone: phone.trim(),
-      whatsapp: phone.trim(),
-      cpf: cpf.trim() || undefined,
-      created_at: new Date().toISOString()
-    });
-    store.addAuditLog({
-      tenant_id: tenantId,
-      user_id: currentUser.id,
-      user_role: currentUser.role,
-      action: 'CLIENTE_CADASTRADO',
-      module: 'Clientes',
-      record_id: id,
-      details: { nome: name.trim(), telefone: phone.trim(), origem: 'cadastro rápido na venda' }
-    });
-    store.saveToStorage();
-    onCreated(id);
+    onCreated(result.data.id);
     setOpen(false);
     setName(''); setPhone(''); setCpf(''); setError('');
   };

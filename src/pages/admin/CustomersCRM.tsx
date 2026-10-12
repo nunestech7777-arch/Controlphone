@@ -9,6 +9,8 @@ import { useAuth } from '../../context/AuthContext';
 import { Customer } from '../../types';
 import { CustomerProfileModal } from './CustomerProfileModal';
 import { consumeIntent } from '../../lib/navIntent';
+import { isValidCPF, maskCPF, maskPhone } from '../../lib/tenantSetup';
+import { formatBRL } from '../../lib/labels';
 
 export const CustomersCRM: React.FC = () => {
   const { currentTenant, currentUser } = useAuth();
@@ -29,11 +31,13 @@ export const CustomersCRM: React.FC = () => {
   const [cpf, setCpf] = useState('');
   const [birthDate, setBirthDate] = useState('');
   const [address, setAddress] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formError, setFormError] = useState('');
 
   const customers = store.customers.filter(c => c.tenant_id === tenantId);
 
   // Aniversariantes do mês atual (Outubro = 10)
-  const currentMonth = 10;
+  const currentMonth = new Date().getMonth() + 1;
   const birthdayCustomers = customers.filter(c => {
     if (!c.birth_date) return false;
     const [, month] = c.birth_date.split('-');
@@ -46,43 +50,53 @@ export const CustomersCRM: React.FC = () => {
     (c.cpf && c.cpf.includes(searchTerm))
   );
 
-  const handleCreateCustomer = (e: React.FormEvent) => {
+  const resetForm = () => {
+    setEditingId(null);
+    setName(''); setPhone(''); setWhatsapp(''); setEmail(''); setCpf(''); setBirthDate(''); setAddress('');
+    setFormError('');
+  };
+
+  const openCreate = () => {
+    resetForm();
+    setIsModalOpen(true);
+  };
+
+  const openEdit = (cust: Customer) => {
+    setEditingId(cust.id);
+    setName(cust.name);
+    setPhone(cust.phone);
+    setWhatsapp(cust.whatsapp || '');
+    setEmail(cust.email || '');
+    setCpf(cust.cpf || '');
+    setBirthDate(cust.birth_date || '');
+    setAddress(cust.address || '');
+    setFormError('');
+    setProfileId(null);
+    setIsModalOpen(true);
+  };
+
+  const handleSaveCustomer = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name || !phone) return;
-
-    const newCust: Customer = {
-      id: 'cust-' + Date.now(),
-      tenant_id: tenantId,
-      name,
-      phone,
-      whatsapp: whatsapp || phone,
-      email,
-      cpf,
-      birth_date: birthDate,
-      address,
-      created_at: new Date().toISOString()
-    };
-
-    store.customers.unshift(newCust);
-    store.addAuditLog({
-      tenant_id: tenantId,
-      user_id: currentUser.id,
-      user_role: currentUser.role,
-      action: 'CLIENTE_CADASTRADO',
-      module: 'Clientes',
-      record_id: newCust.id,
-      details: { nome: name, telefone: phone }
+    if (cpf.trim() && !isValidCPF(cpf)) {
+      setFormError('CPF inválido. Confira os números ou deixe o campo em branco.');
+      return;
+    }
+    const digits = cpf.replace(/\D/g, '');
+    const duplicate = digits && customers.find(c => c.id !== editingId && (c.cpf || '').replace(/\D/g, '') === digits);
+    if (duplicate) {
+      setFormError(`Já existe um cliente com este CPF: ${duplicate.name}.`);
+      return;
+    }
+    const result = store.saveCustomer({
+      tenantId, userId: currentUser.id, customerId: editingId || undefined,
+      data: { name, phone, whatsapp, email, cpf, birth_date: birthDate, address }
     });
-
-    store.saveToStorage();
+    if (!result.ok) {
+      setFormError(result.error || 'Não foi possível salvar o cliente.');
+      return;
+    }
     setIsModalOpen(false);
-    setName('');
-    setPhone('');
-    setWhatsapp('');
-    setEmail('');
-    setCpf('');
-    setBirthDate('');
-    setAddress('');
+    resetForm();
   };
 
   const openWhatsApp = (phoneNum: string, clientName: string) => {
@@ -105,7 +119,7 @@ export const CustomersCRM: React.FC = () => {
         </div>
 
         <button
-          onClick={() => setIsModalOpen(true)}
+          onClick={openCreate}
           className="btn-tenant-primary text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all active:scale-95"
         >
           <Plus className="w-4 h-4" />
@@ -193,7 +207,7 @@ export const CustomersCRM: React.FC = () => {
                       ) : '—'}
                     </td>
                     <td className="py-3.5 px-4 font-extrabold text-slate-900">
-                      R$ {totalSpent.toFixed(2)}
+                      {formatBRL(totalSpent)}
                     </td>
                     <td className="py-3.5 px-4 text-right">
                       <button
@@ -217,6 +231,7 @@ export const CustomersCRM: React.FC = () => {
         <CustomerProfileModal
           customer={customers.find(c => c.id === profileId) as Customer}
           onClose={() => setProfileId(null)}
+          onEdit={openEdit}
         />
       )}
 
@@ -227,14 +242,14 @@ export const CustomersCRM: React.FC = () => {
             <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
               <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-2">
                 <Users className="w-4 h-4 text-blue-600" />
-                Cadastrar Novo Cliente
+                {editingId ? 'Editar Cliente' : 'Cadastrar Novo Cliente'}
               </h3>
               <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-700">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateCustomer} className="space-y-3 text-xs">
+            <form onSubmit={handleSaveCustomer} className="space-y-3 text-xs">
               <div>
                 <label className="font-bold text-slate-700 block mb-1">Nome Completo *</label>
                 <input
@@ -254,7 +269,7 @@ export const CustomersCRM: React.FC = () => {
                     type="text"
                     placeholder="(11) 99999-9999"
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={(e) => setPhone(maskPhone(e.target.value))}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 font-semibold"
                     required
                   />
@@ -265,7 +280,7 @@ export const CustomersCRM: React.FC = () => {
                     type="text"
                     placeholder="(11) 99999-9999"
                     value={whatsapp}
-                    onChange={(e) => setWhatsapp(e.target.value)}
+                    onChange={(e) => setWhatsapp(maskPhone(e.target.value))}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500"
                   />
                 </div>
@@ -294,6 +309,18 @@ export const CustomersCRM: React.FC = () => {
               </div>
 
               <div>
+                <label className="font-bold text-slate-700 block mb-1">CPF</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="000.000.000-00"
+                  value={cpf}
+                  onChange={(e) => setCpf(maskCPF(e.target.value))}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div>
                 <label className="font-bold text-slate-700 block mb-1">Endereço Completo</label>
                 <input
                   type="text"
@@ -303,6 +330,8 @@ export const CustomersCRM: React.FC = () => {
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500"
                 />
               </div>
+
+              {formError && <p className="text-[11px] font-semibold text-rose-600">{formError}</p>}
 
               <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
                 <button
@@ -316,7 +345,7 @@ export const CustomersCRM: React.FC = () => {
                   type="submit"
                   className="btn-tenant-primary px-5 py-2 font-bold rounded-xl"
                 >
-                  Salvar Cliente
+                  {editingId ? 'Salvar Alterações' : 'Salvar Cliente'}
                 </button>
               </div>
             </form>

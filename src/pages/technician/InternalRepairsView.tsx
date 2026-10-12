@@ -7,6 +7,7 @@ import { RefreshCw, Plus, CheckCircle2, Smartphone, Search, X } from 'lucide-rea
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { InternalRepair } from '../../types';
+import { formatBRL } from '../../lib/labels';
 
 export const InternalRepairsView: React.FC = () => {
   const { currentTenant, currentUser } = useAuth();
@@ -127,7 +128,7 @@ export const InternalRepairsView: React.FC = () => {
                       {rep.parts_used || '—'}
                     </td>
                     <td className="py-3.5 px-4 font-bold text-purple-700">
-                      {rep.repair_cost > 0 ? `+ R$ ${Number(rep.repair_cost).toFixed(2)}` : '—'}
+                      {rep.repair_cost > 0 ? `+ ${formatBRL(Number(rep.repair_cost))}` : '—'}
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${

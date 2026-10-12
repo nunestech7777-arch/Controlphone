@@ -4,7 +4,8 @@
 
 import React, { useState } from 'react';
 import { RefreshCw, Smartphone, CheckCircle2, ArrowRight, X } from 'lucide-react';
-import { store } from '../../lib/store';
+import { store, isValidImei, IMEI_HINT } from '../../lib/store';
+import { PAYMENT_METHOD_LABELS, formatBRL } from '../../lib/labels';
 import { useAuth } from '../../context/AuthContext';
 import { PaymentMethod } from '../../types';
 import { QuickCustomerCreate } from '../../components/shared/QuickCustomerCreate';
@@ -29,7 +30,8 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
   const [receivedNotes, setReceivedNotes] = useState('');
   const [appraisalValue, setAppraisalValue] = useState(''); // Avaliação livre do vendedor
 
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('credit_card');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('pix');
+  const [installments, setInstallments] = useState(1);
   const [salesOrigin, setSalesOrigin] = useState('');
   const [successTradeIn, setSuccessTradeIn] = useState<any | null>(null);
 
@@ -44,6 +46,15 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
     e.preventDefault();
     if (!customerId || !soldDeviceId || !soldDevicePrice || !receivedModel || !receivedImei || !appraisalValue || !salesOrigin) {
       alert('Preencha todos os campos obrigatórios do upgrade!');
+      return;
+    }
+
+    if (!isValidImei(receivedImei)) {
+      alert(`IMEI do aparelho recebido inválido. ${IMEI_HINT}`);
+      return;
+    }
+    if (appraisalNum > soldPriceNum) {
+      alert('A avaliação do aparelho usado não pode ser maior que o preço do aparelho vendido.');
       return;
     }
 
@@ -64,6 +75,7 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
         receivedNotes,
         appraisalValue: appraisalNum,
         paymentMethod,
+        installments,
         salesOrigin
       });
     } catch (err) {
@@ -99,11 +111,11 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
         <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm max-w-sm mx-auto text-left space-y-2 text-xs">
           <div className="flex justify-between">
             <span className="text-slate-400">Avaliação do Usado:</span>
-            <span className="font-bold text-purple-700">R$ {appraisalNum.toFixed(2)}</span>
+            <span className="font-bold text-purple-700">{formatBRL(appraisalNum)}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-slate-400">Diferença Paga pelo Cliente:</span>
-            <span className="font-black text-emerald-600 text-sm">R$ {differenceToPay.toFixed(2)}</span>
+            <span className="font-black text-emerald-600 text-sm">{formatBRL(differenceToPay)}</span>
           </div>
         </div>
 
@@ -121,9 +133,17 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
               setCustomerId('');
               setSoldDeviceId('');
               setSoldDevicePrice('');
+              setReceivedBrand('Apple');
               setReceivedModel('');
+              setReceivedStorage('128GB');
+              setReceivedColor('');
               setReceivedImei('');
+              setReceivedBatteryHealth('85');
+              setReceivedNotes('');
               setAppraisalValue('');
+              setSalesOrigin('');
+              setPaymentMethod('pix');
+              setInstallments(1);
             }}
             className="px-5 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 font-bold text-xs text-slate-700"
           >
@@ -265,6 +285,7 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
                 <option value="128GB">128GB</option>
                 <option value="256GB">256GB</option>
                 <option value="512GB">512GB</option>
+                <option value="1TB">1TB</option>
               </select>
             </div>
           </div>
@@ -286,9 +307,11 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
               <label className="font-bold text-slate-700 block mb-1">Número do IMEI *</label>
               <input
                 type="text"
-                placeholder="IMEI do aparelho usado"
+                placeholder="15 dígitos"
+                inputMode="numeric"
+                maxLength={15}
                 value={receivedImei}
-                onChange={(e) => setReceivedImei(e.target.value)}
+                onChange={(e) => setReceivedImei(e.target.value.replace(/\D/g, ''))}
                 className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono"
                 required
               />
@@ -341,18 +364,59 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
           <div className="flex justify-between items-center text-sm">
             <span className="font-semibold text-slate-600">Preço do Aparelho Vendido:</span>
-            <span className="font-bold text-slate-800">R$ {soldPriceNum.toFixed(2)}</span>
+            <span className="font-bold text-slate-800">{formatBRL(soldPriceNum)}</span>
           </div>
           <div className="flex justify-between items-center text-sm">
             <span className="font-semibold text-purple-700">(-) Avaliação do Usado:</span>
-            <span className="font-bold text-purple-700">- R$ {appraisalNum.toFixed(2)}</span>
+            <span className="font-bold text-purple-700">- {formatBRL(appraisalNum)}</span>
           </div>
           <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
             <span className="text-base font-extrabold text-slate-800">DIFERENÇA A RECEBER:</span>
             <span className="text-2xl font-black text-emerald-600">
-              R$ {differenceToPay.toFixed(2)}
+              {formatBRL(differenceToPay)}
             </span>
           </div>
+
+          {appraisalNum > soldPriceNum && (
+            <p className="text-[11px] font-bold text-rose-600">
+              A avaliação está acima do preço do aparelho vendido. Ajuste um dos valores para continuar.
+            </p>
+          )}
+
+          {/* FORMA DE PAGAMENTO DA DIFERENÇA */}
+          {differenceToPay > 0 && (
+            <div className="pt-3 border-t border-slate-100 space-y-2">
+              <label className="text-xs font-bold text-slate-700 block">Forma de Pagamento da Diferença *</label>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                {(['pix', 'credit_card', 'debit_card', 'cash'] as PaymentMethod[]).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setPaymentMethod(m)}
+                    className={`p-2.5 rounded-xl border text-xs font-bold transition-all ${
+                      paymentMethod === m
+                        ? 'bg-tenant-action text-white border-transparent shadow-sm'
+                        : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {PAYMENT_METHOD_LABELS[m]}
+                  </button>
+                ))}
+              </div>
+              {paymentMethod === 'credit_card' && (
+                <select
+                  value={installments}
+                  onChange={(e) => setInstallments(parseInt(e.target.value))}
+                  aria-label="Parcelas no cartão"
+                  className="w-full text-xs px-3 py-2 rounded-xl border border-slate-200"
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 18].map((n) => (
+                    <option key={n} value={n}>{n}x de {formatBRL(differenceToPay / n)}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
 
           <button
             type="submit"

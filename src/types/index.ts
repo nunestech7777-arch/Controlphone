@@ -298,6 +298,8 @@ export interface TradeIn {
   difference_amount: number;
   payment_method: PaymentMethod;
   sale_id?: string; // Venda (número normal da sequência) que originou o upgrade
+  received_device_snapshot?: Device; // Cadastro anterior do aparelho recebido, quando a loja já o havia vendido
+  closed_warranty_ids?: string[]; // Garantias encerradas quando esse aparelho voltou para a loja
   status: string;
   created_at: string;
   customer?: Customer;

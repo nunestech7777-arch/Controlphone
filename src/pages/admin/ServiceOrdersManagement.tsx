@@ -20,7 +20,7 @@ import { downloadBuiltDocument } from '../../lib/pdf/documentActions';
 import { WARRANTY_STATUS_META, formatDay as formatWarrantyDay, getWarrantyStatus } from '../../lib/warrantyStatus';
 
 type OriginTab = 'internal' | 'external';
-type ActionKind = 'complete' | 'deliver' | 'cancel';
+type ActionKind = 'complete' | 'deliver' | 'cancel' | 'reject';
 
 const STATUS_META: Record<OSStatus, { label: string; cls: string }> = {
   waiting_diagnosis: { label: 'Aguardando diagnóstico', cls: 'bg-slate-100 text-slate-700 border-slate-200' },
@@ -53,7 +53,7 @@ const todayISO = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 const formatDate = (iso?: string) => (iso ? new Date(iso).toLocaleDateString('pt-BR') : '—');
-const formatBRL = (v: number) => `R$ ${Number(v).toFixed(2)}`;
+const formatBRL = (v: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(v) || 0);
 
 export const ServiceOrdersManagement: React.FC = () => {
   const { currentTenant, currentUser, currentTheme } = useAuth();
@@ -196,11 +196,13 @@ export const ServiceOrdersManagement: React.FC = () => {
     let ownerId = customerId;
     if (newCustomerMode) {
       if (!newCustName.trim() || !newCustPhone.trim()) { setError('Informe nome e telefone do novo cliente.'); return; }
-      ownerId = 'cust-' + Date.now();
-      store.customers.unshift({
-        id: ownerId, tenant_id: tenantId, name: newCustName.trim(), phone: newCustPhone.trim(),
-        whatsapp: newCustPhone.trim(), created_at: new Date().toISOString()
+      // O cliente só segue para o servidor depois que a OS for aceita
+      const created = store.saveCustomer({
+        tenantId, userId: currentUser.id, data: { name: newCustName, phone: newCustPhone },
+        origin: 'cadastro na abertura de OS', defer: true
       });
+      if (!created.ok || !created.data) { setError(created.error || 'Não foi possível cadastrar o cliente.'); return; }
+      ownerId = created.data.id;
     }
     const result = store.createExternalAssistance({
       tenantId, customerId: ownerId, userId: currentUser.id, userRole: currentUser.role,
@@ -210,11 +212,12 @@ export const ServiceOrdersManagement: React.FC = () => {
     });
     if (!result.ok) {
       // desfaz o cliente recém-criado para não deixar registro órfão
-      if (newCustomerMode) store.customers = store.customers.filter(c => c.id !== ownerId);
+      if (newCustomerMode) store.discardCustomer(ownerId);
       setError(result.error || 'Erro ao criar a assistência.');
       return;
     }
     // A Ordem de Serviço (contrato com o cliente) é gerada automaticamente ao abrir a assistência
+    if (newCustomerMode) void store.pushUnsynced();
     if (result.order && currentTenant) {
       const built = getServiceOrderDocument({ os: result.order, tenant: currentTenant, theme: currentTheme });
       void downloadBuiltDocument(built);
@@ -283,6 +286,29 @@ export const ServiceOrdersManagement: React.FC = () => {
     setDetailOsId(null);
   };
 
+  // O administrador também atende no balcão: registra a resposta do cliente ao orçamento
+  const handleApproveQuote = (os: ServiceOrder) => {
+    const ok = store.updateClientQuoteApproval({ tenantId, osId: os.id, sellerId: currentUser.id, approved: true });
+    if (!ok) alert('Esta ordem não está aguardando a resposta do cliente.');
+  };
+
+  const handleRejectQuote = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!actionOs) return;
+    const ok = store.updateClientQuoteApproval({
+      tenantId, osId: actionOs.id, sellerId: currentUser.id, approved: false, rejectionReason: cancelReason
+    });
+    if (!ok) { setError('Informe o motivo. A ordem precisa estar com o orçamento enviado ao cliente.'); return; }
+    closeAction();
+  };
+
+  const handleReturnRejected = (os: ServiceOrder) => {
+    if (!window.confirm(`Confirmar a devolução do aparelho da OS #${os.os_number} ao cliente, sem reparo?`)) return;
+    const result = store.returnRejectedOrder({ tenantId, osId: os.id, userId: currentUser.id });
+    if (!result.ok) alert(result.error);
+    else setDetailOsId(null);
+  };
+
   const syncQuoteTotal = (service: string, parts: string) => {
     const sum = (parseFloat(service) || 0) + (parseFloat(parts) || 0);
     if (sum > 0) setClientQuoteInput(sum.toFixed(2));
@@ -301,17 +327,25 @@ export const ServiceOrdersManagement: React.FC = () => {
   const handleSaveQuote = (e: React.FormEvent) => {
     e.preventDefault();
     if (!quoteModalOS || !clientQuoteInput) return;
-    store.adminSetServiceOrderQuote({
+    const saved = store.adminSetServiceOrderQuote({
       tenantId, osId: quoteModalOS.id, adminId: currentUser.id, clientQuoteAmount: parseFloat(clientQuoteInput),
       serviceDescription: quoteService, serviceAmount: parseFloat(quoteServiceAmount) || undefined,
       partsDescription: quoteParts, partsAmount: parseFloat(quotePartsAmount) || undefined, deadline: quoteDeadline
     });
+    if (!saved) {
+      alert('Não foi possível salvar o orçamento: informe um valor válido. A ordem precisa estar aguardando orçamento.');
+      return;
+    }
     setQuoteModalOS(null);
     setClientQuoteInput('');
   };
 
-  const statusBadge = (st: OSStatus) => {
-    const meta = STATUS_META[st] || { label: st, cls: 'bg-slate-100 text-slate-600 border-slate-200' };
+  const returnedWithoutRepair = (os?: ServiceOrder) => Boolean(os && os.status === 'rejected' && os.closed_at);
+
+  const statusBadge = (st: OSStatus, os?: ServiceOrder) => {
+    const meta = returnedWithoutRepair(os)
+      ? { label: 'Recusada — aparelho devolvido', cls: 'bg-slate-100 text-slate-600 border-slate-200' }
+      : STATUS_META[st] || { label: st, cls: 'bg-slate-100 text-slate-600 border-slate-200' };
     return (
       <span className={`inline-block whitespace-nowrap px-2.5 py-1 rounded-full text-[11px] font-semibold border ${meta.cls}`}>
         {meta.label}
@@ -358,7 +392,22 @@ export const ServiceOrdersManagement: React.FC = () => {
             Retomar Manutenção
           </button>
         )}
-        {os.status !== 'ready_for_pickup' && (
+        {os.status === 'quote_ready' && os.origin === 'external' && (
+          <>
+            <button type="button" onClick={() => handleApproveQuote(os)} className={`${btn} bg-emerald-600 hover:bg-emerald-700 text-white`}>
+              <CheckCircle2 className="w-4 h-4" /> Cliente Aprovou
+            </button>
+            <button type="button" onClick={() => openAction('reject', os)} className={neutral}>
+              Cliente Recusou
+            </button>
+          </>
+        )}
+        {os.status === 'rejected' && os.origin === 'external' && (
+          <button type="button" onClick={() => handleReturnRejected(os)} className={`${btn} bg-slate-800 hover:bg-slate-900 text-white`}>
+            <PackageCheck className="w-4 h-4" /> Devolver ao Cliente (sem reparo)
+          </button>
+        )}
+        {os.status !== 'ready_for_pickup' && os.status !== 'rejected' && (
           <button type="button" onClick={() => openAction('cancel', os)} className={`${btn} border border-rose-200 bg-white text-rose-600 hover:bg-rose-50`}>
             <Ban className="w-3.5 h-3.5" /> Cancelar
           </button>
@@ -479,7 +528,7 @@ export const ServiceOrdersManagement: React.FC = () => {
                     <div className="max-w-[200px] truncate text-slate-600" title={os.reported_defect}>{os.reported_defect}</div>
                   </td>
                   <td className="py-3.5 px-4 whitespace-nowrap">{formatDate(os.entered_at || os.created_at)}</td>
-                  <td className="py-3.5 px-4 text-center">{statusBadge(os.status)}</td>
+                  <td className="py-3.5 px-4 text-center">{statusBadge(os.status, os)}</td>
                   <td className="py-3.5 px-4">
                     <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                       {quotePending(os) && (
@@ -529,7 +578,7 @@ export const ServiceOrdersManagement: React.FC = () => {
                 </p>
               </div>
               <div className="flex items-center gap-3 shrink-0">
-                {statusBadge(detailOs.status)}
+                {statusBadge(detailOs.status, detailOs)}
                 <button onClick={() => setDetailOsId(null)} className="text-slate-400 hover:text-slate-700">
                   <X className="w-5 h-5" />
                 </button>
@@ -563,8 +612,10 @@ export const ServiceOrdersManagement: React.FC = () => {
                   <span className="font-semibold text-slate-800">{formatDate(detailOs.entered_at || detailOs.created_at)}</span>
                 </div>
                 <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
-                  <span className={cardLabelCls}>Conclusão</span>
-                  <span className="font-semibold text-slate-800">{formatDate(detailOs.completed_at)}</span>
+                  <span className={cardLabelCls}>{returnedWithoutRepair(detailOs) ? 'Devolvido sem reparo em' : 'Conclusão'}</span>
+                  <span className="font-semibold text-slate-800">
+                    {formatDate(returnedWithoutRepair(detailOs) ? detailOs.closed_at : detailOs.completed_at)}
+                  </span>
                 </div>
               </div>
 
@@ -685,7 +736,7 @@ export const ServiceOrdersManagement: React.FC = () => {
                       <span className="font-semibold text-slate-700">
                         {detailOs.payment_status === 'paid'
                           ? `Pago${detailOs.payment_method ? ` (${PAYMENT_LABELS[detailOs.payment_method] || detailOs.payment_method})` : ''}`
-                          : 'Pendente'}
+                          : returnedWithoutRepair(detailOs) || detailOs.status === 'cancelled' ? 'Sem cobrança' : 'Pendente'}
                       </span>
                     </div>
                   </>
@@ -1179,6 +1230,37 @@ export const ServiceOrdersManagement: React.FC = () => {
       )}
 
       {/* CANCELAR */}
+      {action?.kind === 'reject' && actionOs && (
+        <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl animate-fade-in">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+              <h3 className="text-sm font-extrabold text-slate-800">Orçamento recusado — OS #{actionOs.os_number}</h3>
+              <button onClick={closeAction} className="text-slate-400 hover:text-slate-700">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleRejectQuote} className="space-y-3 text-xs">
+              <p className="text-slate-600 leading-relaxed">
+                A ordem fica aguardando a devolução do aparelho ao cliente, sem reparo e sem cobrança.
+              </p>
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Motivo da Recusa *</label>
+                <textarea rows={2} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} className={inputCls} required />
+              </div>
+              {error && <p className="text-[11px] font-semibold text-rose-600">{error}</p>}
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                <button type="button" onClick={closeAction} className="px-4 py-2 font-semibold text-slate-600 hover:bg-slate-100 rounded-xl">
+                  Voltar
+                </button>
+                <button type="submit" className="px-5 py-2 font-bold rounded-xl bg-rose-600 hover:bg-rose-700 text-white">
+                  Registrar Recusa
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {action?.kind === 'cancel' && actionOs && (
         <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl animate-fade-in">

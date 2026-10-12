@@ -11,7 +11,9 @@ import {
 } from '../types';
 import { DEFAULT_FEATURES, buildDefaultTheme, isTenantOperational, sameCnpj } from './tenantSetup';
 
-import { pushDocument, pushSettings, pushTenant, pushTheme, removeDocument } from './realSync';
+import {
+  pushCustomers, pushDocument, pushSettings, pushSuppliers, pushTenant, pushTheme, removeDocument, removeSupplierRemote
+} from './realSync';
 
 export interface AssistanceResult {
   ok: boolean;
@@ -83,6 +85,15 @@ export const DEFAULT_WARRANTY_TERMS =
   'legais do consumidor previstos no CDC e não os substitui nem reduz.';
 
 // Datas de garantia em dia local da loja ('YYYY-MM-DD'), dias corridos
+export const isUuid = (v?: string) => Boolean(v && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v));
+// Identificador no formato do banco, para o registro poder ser gravado no servidor
+export const newUuid = () => crypto.randomUUID();
+
+export type CustomerInput = Pick<Customer, 'name' | 'phone'> &
+  Partial<Pick<Customer, 'whatsapp' | 'email' | 'cpf' | 'birth_date' | 'address' | 'notes'>>;
+export type SupplierInput = Pick<Supplier, 'name' | 'phone'> &
+  Partial<Pick<Supplier, 'company_name' | 'whatsapp' | 'email' | 'cpf_cnpj' | 'address' | 'notes'>>;
+
 export const toLocalDay = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const addDays = (day: string, days: number) => {
@@ -90,6 +101,11 @@ export const addDays = (day: string, days: number) => {
   return toLocalDay(new Date(y, m - 1, d + days));
 };
 const toCents = (v: unknown) => Math.round((Number(v) || 0) * 100);
+
+// IMEI sempre comparado só pelos dígitos (espaços, traços e pontos digitados não criam duplicidade)
+export const normalizeImei = (v?: string) => (v || '').replace(/\D/g, '');
+export const isValidImei = (v?: string) => normalizeImei(v).length === 15;
+export const IMEI_HINT = 'O IMEI deve ter 15 dígitos.';
 const uid = (prefix: string) => prefix + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
 
 const STORAGE_KEY = 'controlphone_state_v1';
@@ -682,6 +698,19 @@ class ControlphoneStore {
 
   private listeners: Set<() => void> = new Set();
 
+  /**
+   * Clientes e fornecedores já vão para o banco. Aqui ficam os ids que ainda não chegaram lá
+   * (sem internet, por exemplo); o envio é refeito na próxima sincronização.
+   */
+  unsynced: { customers: string[]; suppliers: string[] } = { customers: [], suppliers: [] };
+  /** true enquanto houver cadastro que não pôde ser enviado ao servidor */
+  get hasUnsynced() {
+    return this.unsynced.customers.length + this.unsynced.suppliers.length > 0;
+  }
+
+  /** true quando a última gravação no navegador falhou (ex.: armazenamento cheio). A tela avisa e pede ação. */
+  saveFailed = false;
+
   // Modo real: conta, loja e equipe vêm do Supabase; os demais cadastros ficam em uma
   // chave própria do navegador (separada da demonstração) até cada módulo ser migrado.
   isRealMode = false;
@@ -715,6 +744,7 @@ class ControlphoneStore {
     this.returnRequests = [];
     this.customerCredits = [];
     this.tenantDocuments = [];
+    this.unsynced = { customers: [], suppliers: [] };
   }
 
   /** Entra no modo real com a conta, as lojas e a equipe lidas do Supabase. */
@@ -783,6 +813,7 @@ class ControlphoneStore {
         if (parsed.returnRequests) this.returnRequests = parsed.returnRequests;
         if (parsed.customerCredits) this.customerCredits = parsed.customerCredits;
         if (parsed.tenantDocuments) this.tenantDocuments = parsed.tenantDocuments;
+        if (parsed.unsynced) this.unsynced = { customers: parsed.unsynced.customers || [], suppliers: parsed.unsynced.suppliers || [] };
       }
     } catch (e) {
       console.warn('Erro ao carregar dados do localStorage:', e);
@@ -1015,13 +1046,16 @@ class ControlphoneStore {
         warranties: this.warranties,
         returnRequests: this.returnRequests,
         customerCredits: this.customerCredits,
-        tenantDocuments: this.tenantDocuments
+        tenantDocuments: this.tenantDocuments,
+        unsynced: this.unsynced
       };
       localStorage.setItem(this.storageKey, JSON.stringify(data));
-      this.notify();
+      this.saveFailed = false;
     } catch (e) {
       console.error('Erro ao salvar no storage:', e);
+      this.saveFailed = true;
     }
+    this.notify();
   }
 
   subscribe(listener: () => void) {
@@ -1079,8 +1113,170 @@ class ControlphoneStore {
     });
   }
 
+  // --------------------------------------------------------------------------
+  // CLIENTES E FORNECEDORES — gravados no banco (modo real) com cópia local
+  // --------------------------------------------------------------------------
+
+  private markUnsynced(kind: 'customers' | 'suppliers', id: string) {
+    if (!this.isRealMode) return; // na demonstração nada vai para o servidor
+    if (!this.unsynced[kind].includes(id)) this.unsynced[kind].push(id);
+  }
+
+  /** Envia ao servidor o que ainda está na fila. Chamado após cada cadastro e a cada sincronização. */
+  async pushUnsynced(): Promise<boolean> {
+    if (!this.isRealMode || !this.hasUnsynced) return true;
+    const customerIds = [...this.unsynced.customers];
+    const supplierIds = [...this.unsynced.suppliers];
+    const [customersOk, suppliersOk] = await Promise.all([
+      pushCustomers(this.customers.filter(c => customerIds.includes(c.id) && isUuid(c.id))),
+      pushSuppliers(this.suppliers.filter(s => supplierIds.includes(s.id) && isUuid(s.id)))
+    ]);
+    if (customersOk) this.unsynced.customers = this.unsynced.customers.filter(id => !customerIds.includes(id));
+    if (suppliersOk) this.unsynced.suppliers = this.unsynced.suppliers.filter(id => !supplierIds.includes(id));
+    this.saveToStorage();
+    return customersOk && suppliersOk;
+  }
+
+  /**
+   * Cadastra ou edita um cliente. `defer` adia o envio ao servidor (usado quando o cliente nasce
+   * junto de outra operação que ainda pode ser recusada; depois chame pushUnsynced ou discardCustomer).
+   */
+  saveCustomer(p: {
+    tenantId: string; userId: string; customerId?: string; data: CustomerInput; origin?: string; defer?: boolean;
+  }): OpResult<Customer> {
+    const name = p.data.name?.trim();
+    const phone = p.data.phone?.trim();
+    if (!name || !phone) return opFail('Informe nome e telefone do cliente.');
+    const clean = (v?: string) => (v && v.trim() ? v.trim() : undefined);
+    const fields = {
+      name, phone,
+      whatsapp: clean(p.data.whatsapp) || phone,
+      email: clean(p.data.email),
+      cpf: clean(p.data.cpf),
+      birth_date: clean(p.data.birth_date),
+      address: clean(p.data.address),
+      notes: clean(p.data.notes)
+    };
+
+    const existing = p.customerId
+      ? this.customers.find(c => c.id === p.customerId && c.tenant_id === p.tenantId)
+      : undefined;
+    if (p.customerId && !existing) return opFail('Cliente não encontrado.');
+
+    const customer: Customer = existing || { id: newUuid(), tenant_id: p.tenantId, name, phone, created_at: new Date().toISOString() };
+    Object.assign(customer, fields);
+    if (!existing) this.customers.unshift(customer);
+    this.markUnsynced('customers', customer.id);
+
+    this.addAuditLog({
+      tenant_id: p.tenantId, user_id: p.userId, user_role: this.roleOf(p.userId),
+      action: existing ? 'CLIENTE_EDITADO' : 'CLIENTE_CADASTRADO', module: 'Clientes', record_id: customer.id,
+      details: { nome: name, telefone: phone, origem: p.origin }
+    });
+    this.saveToStorage();
+    if (!p.defer) void this.pushUnsynced();
+    return { ok: true, data: customer };
+  }
+
+  /** Desfaz um cliente criado com `defer` cuja operação principal foi recusada. */
+  discardCustomer(customerId: string) {
+    this.customers = this.customers.filter(c => c.id !== customerId);
+    this.unsynced.customers = this.unsynced.customers.filter(id => id !== customerId);
+    this.saveToStorage();
+  }
+
+  saveSupplier(p: { tenantId: string; userId: string; supplierId?: string; data: SupplierInput }): OpResult<Supplier> {
+    if (!this.isManager(this.roleOf(p.userId))) return opFail('Somente administradores podem cadastrar ou alterar fornecedores.');
+    const name = p.data.name?.trim();
+    const phone = p.data.phone?.trim();
+    if (!name || !phone) return opFail('Informe nome e telefone do fornecedor.');
+    const clean = (v?: string) => (v && v.trim() ? v.trim() : undefined);
+    const fields = {
+      name, phone,
+      company_name: clean(p.data.company_name),
+      whatsapp: clean(p.data.whatsapp),
+      email: clean(p.data.email),
+      cpf_cnpj: clean(p.data.cpf_cnpj),
+      address: clean(p.data.address),
+      notes: clean(p.data.notes)
+    };
+
+    const existing = p.supplierId
+      ? this.suppliers.find(s => s.id === p.supplierId && s.tenant_id === p.tenantId)
+      : undefined;
+    if (p.supplierId && !existing) return opFail('Fornecedor não encontrado.');
+
+    const supplier: Supplier = existing || { id: newUuid(), tenant_id: p.tenantId, name, phone, created_at: new Date().toISOString() };
+    Object.assign(supplier, fields);
+    if (!existing) this.suppliers.unshift(supplier);
+    this.markUnsynced('suppliers', supplier.id);
+
+    this.addAuditLog({
+      tenant_id: p.tenantId, user_id: p.userId, user_role: this.roleOf(p.userId),
+      action: existing ? 'FORNECEDOR_EDITADO' : 'FORNECEDOR_CADASTRADO', module: 'Fornecedores', record_id: supplier.id,
+      details: { nome: name, empresa: fields.company_name, telefone: phone }
+    });
+    this.saveToStorage();
+    void this.pushUnsynced();
+    return { ok: true, data: supplier };
+  }
+
+  /**
+   * Recebe do servidor a lista atual de uma loja. Registros locais que ainda não foram enviados
+   * (fila de envio) são preservados; os demais passam a refletir exatamente o que está no banco.
+   */
+  applyRemoteRecords(tenantId: string, remote: { customers?: Customer[]; suppliers?: Supplier[] }) {
+    if (remote.customers) {
+      const ids = new Set(remote.customers.map(c => c.id));
+      const pending = this.customers.filter(c => c.tenant_id === tenantId && !ids.has(c.id) && this.unsynced.customers.includes(c.id));
+      this.customers = [...pending, ...remote.customers, ...this.customers.filter(c => c.tenant_id !== tenantId)];
+    }
+    if (remote.suppliers) {
+      const ids = new Set(remote.suppliers.map(s => s.id));
+      const pending = this.suppliers.filter(s => s.tenant_id === tenantId && !ids.has(s.id) && this.unsynced.suppliers.includes(s.id));
+      this.suppliers = [...pending, ...remote.suppliers, ...this.suppliers.filter(s => s.tenant_id !== tenantId)];
+    }
+    this.saveToStorage();
+  }
+
+  /**
+   * Cadastros feitos antes da ligação com o banco têm identificador antigo. Cada um recebe um
+   * identificador novo, as referências (vendas, OS, garantias, estoque...) são ajustadas e ele entra na fila de envio.
+   */
+  adoptLegacyRecords(tenantId: string, kinds: { customers: boolean; suppliers: boolean }): number {
+    let adopted = 0;
+    if (kinds.customers) {
+      this.customers.filter(c => c.tenant_id === tenantId && !isUuid(c.id)).forEach(c => {
+        const oldId = c.id;
+        c.id = newUuid();
+        [this.sales, this.tradeIns, this.serviceOrders, this.warranties, this.returnRequests, this.customerCredits]
+          .forEach(list => (list as { customer_id?: string }[]).forEach(row => {
+            if (row.customer_id === oldId) row.customer_id = c.id;
+          }));
+        this.markUnsynced('customers', c.id);
+        adopted++;
+      });
+    }
+    if (kinds.suppliers) {
+      this.suppliers.filter(s => s.tenant_id === tenantId && !isUuid(s.id)).forEach(s => {
+        const oldId = s.id;
+        s.id = newUuid();
+        [this.devices, this.accessories, this.gifts, this.supplierPurchases]
+          .forEach(list => (list as { supplier_id?: string }[]).forEach(row => {
+            if (row.supplier_id === oldId) row.supplier_id = s.id;
+          }));
+        this.markUnsynced('suppliers', s.id);
+        adopted++;
+      });
+    }
+    if (adopted > 0) this.saveToStorage();
+    return adopted;
+  }
+
   // Exclui o fornecedor, desvincula os itens do estoque e remove o histórico de compras dele
   deleteSupplier(supplierId: string) {
+    this.unsynced.suppliers = this.unsynced.suppliers.filter(id => id !== supplierId);
+    if (this.isRealMode && isUuid(supplierId)) void removeSupplierRemote(supplierId);
     this.suppliers = this.suppliers.filter(s => s.id !== supplierId);
     this.supplierPurchases = this.supplierPurchases.filter(p => p.supplier_id !== supplierId);
     [...this.devices, ...this.accessories, ...this.gifts].forEach(item => {
@@ -1131,6 +1327,82 @@ class ControlphoneStore {
       if (seenDevices.has(dev.id)) throw new Error('O mesmo aparelho não pode ser vendido duas vezes no mesmo pedido.');
       seenDevices.add(dev.id);
     });
+
+    if (payload.items.length === 0) throw new Error('Adicione pelo menos um aparelho ou acessório à venda.');
+    if (!this.customers.some(c => c.id === payload.customerId && c.tenant_id === payload.tenantId)) {
+      throw new Error('Selecione o cliente da venda.');
+    }
+    if (!payload.salesOrigin.trim()) throw new Error('Informe como o cliente conheceu a loja.');
+    const sellerProfile = this.profiles.find(p => p.id === payload.sellerId);
+    if (!sellerProfile || (sellerProfile.role !== 'super_admin' && sellerProfile.tenant_id !== payload.tenantId)) {
+      throw new Error('O usuário não pertence a esta loja.');
+    }
+
+    // Valores: preço positivo, desconto entre zero e o preço, quantidade inteira
+    payload.items.forEach(it => {
+      if (!Number.isInteger(it.quantity) || it.quantity < 1) throw new Error('A quantidade de cada item deve ser de pelo menos 1.');
+      if (it.itemType === 'device' && it.quantity !== 1) throw new Error('Cada aparelho é vendido individualmente (quantidade 1).');
+      if (!(toCents(it.unitPrice) > 0)) throw new Error('O preço de cada item deve ser maior que zero.');
+      if (toCents(it.discount) < 0 || toCents(it.discount) >= toCents(it.unitPrice)) {
+        throw new Error('O desconto não pode ser negativo nem igual ou maior que o preço do item.');
+      }
+    });
+
+    // Saldo de acessórios e brindes (somando linhas repetidas do mesmo item)
+    const accessoryQty = new Map<string, number>();
+    payload.items.forEach(it => {
+      if (it.itemType !== 'accessory') return;
+      if (!it.accessoryId) throw new Error('Acessório não informado.');
+      accessoryQty.set(it.accessoryId, (accessoryQty.get(it.accessoryId) || 0) + it.quantity);
+    });
+    accessoryQty.forEach((qty, id) => {
+      const acc = this.accessories.find(a => a.id === id && a.tenant_id === payload.tenantId);
+      if (!acc) throw new Error('Acessório não encontrado no estoque desta loja.');
+      if (qty > acc.quantity) throw new Error(`Estoque insuficiente de "${acc.name}": há ${acc.quantity} un. e o pedido tem ${qty}.`);
+    });
+    const giftQty = new Map<string, number>();
+    payload.gifts.forEach(g => {
+      if (!Number.isInteger(g.quantity) || g.quantity < 1) throw new Error('A quantidade de cada brinde deve ser de pelo menos 1.');
+      giftQty.set(g.giftId, (giftQty.get(g.giftId) || 0) + g.quantity);
+    });
+    giftQty.forEach((qty, id) => {
+      const gift = this.gifts.find(g => g.id === id && g.tenant_id === payload.tenantId);
+      if (!gift) throw new Error('Brinde não encontrado no estoque desta loja.');
+      if (qty > gift.quantity) throw new Error(`Estoque insuficiente do brinde "${gift.name}": há ${gift.quantity} un. e o pedido tem ${qty}.`);
+    });
+
+    // Totais e custos são calculados aqui, a partir dos itens e do estoque (os valores enviados pela tela não são usados)
+    const itemCost = (it: (typeof payload.items)[number]) => {
+      if (it.itemType === 'device') {
+        const d = this.devices.find(x => x.id === it.deviceId)!;
+        return Number(d.acquisition_cost) + Number(d.accumulated_repair_cost);
+      }
+      return Number(this.accessories.find(a => a.id === it.accessoryId)!.unit_cost);
+    };
+    const items = payload.items.map(it => ({
+      ...it,
+      unitCost: itemCost(it),
+      totalPrice: ((toCents(it.unitPrice) - toCents(it.discount)) * it.quantity) / 100
+    }));
+    const gifts = payload.gifts.map(g => ({ ...g, unitCost: Number(this.gifts.find(x => x.id === g.giftId)!.unit_cost) }));
+    const subtotalCents = items.reduce((acc, it) => acc + toCents(it.unitPrice) * it.quantity, 0);
+    const discountCents = items.reduce((acc, it) => acc + toCents(it.discount) * it.quantity, 0);
+    const totalCents = subtotalCents - discountCents;
+    const costCents =
+      items.reduce((acc, it) => acc + toCents(it.unitCost) * it.quantity, 0) +
+      gifts.reduce((acc, g) => acc + toCents(g.unitCost) * g.quantity, 0);
+    payload = {
+      ...payload, items, gifts,
+      subtotal: subtotalCents / 100, discountAmount: discountCents / 100, totalAmount: totalCents / 100, totalCost: costCents / 100
+    };
+
+    // Pagamentos: valores positivos que fecham exatamente o total da venda
+    if (payload.payments.length === 0) throw new Error('Informe a forma de pagamento.');
+    if (payload.payments.some(p => !(toCents(p.amount) > 0))) throw new Error('Cada pagamento deve ter valor maior que zero.');
+    const paidCents = payload.payments.reduce((acc, p) => acc + toCents(p.amount), 0);
+    if (paidCents !== totalCents) {
+      throw new Error(`Os pagamentos somam R$ ${(paidCents / 100).toFixed(2)}, mas o total da venda é R$ ${(totalCents / 100).toFixed(2)}.`);
+    }
 
     // Crédito do cliente: nunca acima do saldo nem do total da venda
     const creditUseCents = payload.payments
@@ -1261,6 +1533,10 @@ class ControlphoneStore {
     if (!sale) return opFail('Venda não encontrada.');
     if (sale.status === 'cancelled') return opFail('Esta venda já foi cancelada.');
     if (!reason.trim()) return opFail('Informe o motivo do cancelamento.');
+    if (!this.isManager(this.roleOf(userId))) return opFail('Somente administradores podem cancelar vendas.');
+    if ((sale.items || []).some(it => it.returned_at)) {
+      return opFail('Esta venda já teve troca ou devolução concluída (com reembolso, crédito ou aparelho substituto) e não pode mais ser cancelada.');
+    }
 
     // Upgrade: o aparelho recebido só pode ser invalidado enquanto estiver parado no estoque
     const tradeIn = sale.trade_in_id ? this.tradeIns.find(t => t.id === sale.trade_in_id) : undefined;
@@ -1300,12 +1576,26 @@ class ControlphoneStore {
 
     // Upgrade: invalida a entrada do aparelho recebido (registro e IMEI preservados para rastreio)
     if (tradeIn && received) {
-      received.status = 'decommissioned';
+      const previous = tradeIn.received_device_snapshot;
+      if (previous) {
+        // O aparelho já tinha cadastro (vendido antes pela loja): volta exatamente ao que era
+        Object.keys(received).forEach(k => delete (received as unknown as Record<string, unknown>)[k]);
+        Object.assign(received, previous);
+        // e a garantia que ele tinha com o cliente volta a valer, com as mesmas datas
+        this.warranties.filter(w => tradeIn.closed_warranty_ids?.includes(w.id)).forEach(w => {
+          w.status = 'active';
+          w.cancelled_at = undefined;
+          w.cancel_reason = undefined;
+          w.history.push(this.event(`Garantia restabelecida: upgrade da venda #${sale.sale_number} cancelado`, userId));
+        });
+      } else {
+        received.status = 'decommissioned';
+      }
       this.recordMovement({
         tenant_id: tenantId, device_id: received.id, imei: received.imei,
         movement_type: 'sale_cancelled',
         description: `Entrada invalidada: upgrade da venda #${sale.sale_number} cancelado (aparelho devolvido ao cliente)`,
-        from_status: 'available', to_status: 'decommissioned', notes: reason, user_id: userId
+        from_status: 'available', to_status: received.status, notes: reason, user_id: userId
       });
       tradeIn.status = 'cancelled';
     }
@@ -1330,6 +1620,14 @@ class ControlphoneStore {
       .filter(w => w.sale_id === sale.id && w.status === 'active')
       .forEach(w => this.cancelWarranty(w, 'Venda cancelada: ' + reason, userId));
 
+    // Solicitações de troca/devolução ainda em andamento deixam de fazer sentido
+    this.returnRequests
+      .filter(r => r.sale_id === sale.id && ['open', 'in_review', 'approved'].includes(r.status))
+      .forEach(r => {
+        r.status = 'cancelled';
+        r.history.push(this.event('Status: Cancelada', userId, `Venda #${sale.sale_number} cancelada: ${reason}`));
+      });
+
     // A venda deixa de contar em receita, lucro, ranking e indicadores (todos usam status = concluída)
     sale.status = 'cancelled';
     sale.cancellation_reason = reason;
@@ -1339,7 +1637,7 @@ class ControlphoneStore {
     this.addAuditLog({
       tenant_id: tenantId,
       user_id: userId,
-      user_role: 'admin',
+      user_role: this.roleOf(userId),
       action: 'VENDA_CANCELADA',
       module: 'Vendas',
       record_id: saleId,
@@ -1372,22 +1670,35 @@ class ControlphoneStore {
     receivedNotes?: string;
     appraisalValue: number;
     paymentMethod: PaymentMethod;
+    installments?: number;
     salesOrigin?: string;
   }): TradeIn {
     const soldCheck = this.devices.find(d => d.id === payload.soldDeviceId && d.tenant_id === payload.tenantId);
     if (!soldCheck || soldCheck.status !== 'available') {
       throw new Error('O aparelho do upgrade não está disponível para venda.');
     }
-    if (this.devices.some(d => d.tenant_id === payload.tenantId && d.imei === payload.receivedImei)) {
-      throw new Error('Já existe um aparelho cadastrado com o IMEI do aparelho recebido.');
+    if (!this.customers.some(c => c.id === payload.customerId && c.tenant_id === payload.tenantId)) {
+      throw new Error('Selecione o cliente do upgrade.');
+    }
+    const receivedImei = normalizeImei(payload.receivedImei);
+    if (!isValidImei(receivedImei)) throw new Error(`IMEI do aparelho recebido inválido. ${IMEI_HINT}`);
+    // Aparelho que a loja já vendeu (ou cuja entrada foi invalidada) pode voltar: o mesmo cadastro é reaproveitado
+    const known = this.findDeviceByImei(payload.tenantId, receivedImei);
+    if (known && known.id === soldCheck.id) throw new Error('O aparelho recebido não pode ser o mesmo que está sendo vendido.');
+    if (known && known.status !== 'sold' && known.status !== 'decommissioned') {
+      throw new Error('Já existe um aparelho com este IMEI no estoque da loja.');
     }
     if (!(payload.soldDevicePrice > 0) || !(payload.appraisalValue >= 0)) {
       throw new Error('Informe valores válidos para o aparelho vendido e para a avaliação.');
     }
+    if (toCents(payload.appraisalValue) > toCents(payload.soldDevicePrice)) {
+      throw new Error('A avaliação do aparelho usado não pode ser maior que o preço do aparelho vendido: a diferença a favor do cliente não teria como ser registrada.');
+    }
 
     const now = new Date().toISOString();
     const tradeInId = uid('trade-');
-    const receivedDeviceId = uid('dev-up-');
+    const receivedDeviceId = known ? known.id : uid('dev-up-');
+    const receivedSnapshot = known ? { ...known } : undefined;
     const saleId = uid('sale-');
     const saleNumber = Math.max(1000, ...this.sales.map(s => s.sale_number)) + 1;
     const soldDev = soldCheck;
@@ -1403,10 +1714,10 @@ class ControlphoneStore {
     });
 
     // 2. Entrada automática do aparelho recebido (origem 'trade_in', custo = avaliação)
-    const receivedDevice: Device = {
+    const receivedData: Device = {
       id: receivedDeviceId,
       tenant_id: payload.tenantId,
-      imei: payload.receivedImei,
+      imei: receivedImei,
       brand: payload.receivedBrand,
       model: payload.receivedModel,
       storage_capacity: payload.receivedStorage,
@@ -1420,12 +1731,26 @@ class ControlphoneStore {
       suggested_price: Math.round(payload.appraisalValue * 1.35),
       status: 'available',
       entry_date: now,
-      created_at: now
+      created_at: known ? known.created_at : now
     };
-    this.devices.unshift(receivedDevice);
+    let receivedDevice: Device;
+    let closedWarrantyIds: string[] = [];
+    if (known) {
+      closedWarrantyIds = this.closeWarrantiesForDevice(known.id, `Aparelho voltou para a loja em upgrade (venda #${saleNumber})`, payload.sellerId);
+      known.supplier_id = undefined;
+      known.sold_at = undefined;
+      Object.assign(known, receivedData);
+      receivedDevice = known;
+    } else {
+      receivedDevice = receivedData;
+      this.devices.unshift(receivedDevice);
+    }
     this.recordMovement({
       tenant_id: payload.tenantId, device_id: receivedDevice.id, imei: receivedDevice.imei,
-      movement_type: 'stock_entry', description: `Aparelho recebido em upgrade (venda #${saleNumber}) e cadastrado no estoque`,
+      movement_type: 'stock_entry',
+      description: known
+        ? `Aparelho já vendido pela loja voltou em upgrade (venda #${saleNumber}) e reentrou no estoque`
+        : `Aparelho recebido em upgrade (venda #${saleNumber}) e cadastrado no estoque`,
       to_status: 'available', cost: payload.appraisalValue, user_id: payload.sellerId
     });
 
@@ -1437,7 +1762,11 @@ class ControlphoneStore {
         ? [{ id: `spay-${saleId}-0`, sale_id: saleId, payment_method: 'trade_in_credit' as PaymentMethod, amount: credit, installments: 1, received_at: now }]
         : []),
       ...(difference > 0
-        ? [{ id: `spay-${saleId}-1`, sale_id: saleId, payment_method: payload.paymentMethod, amount: difference, installments: 1, received_at: now }]
+        ? [{
+            id: `spay-${saleId}-1`, sale_id: saleId, payment_method: payload.paymentMethod, amount: difference,
+            installments: payload.paymentMethod === 'credit_card' ? Math.max(1, Math.floor(payload.installments || 1)) : 1,
+            received_at: now
+          }]
         : [])
     ];
     const item: SaleItem = {
@@ -1486,6 +1815,8 @@ class ControlphoneStore {
       difference_amount: payload.soldDevicePrice - payload.appraisalValue,
       payment_method: payload.paymentMethod,
       sale_id: saleId,
+      received_device_snapshot: receivedSnapshot,
+      closed_warranty_ids: closedWarrantyIds.length ? closedWarrantyIds : undefined,
       status: 'completed',
       created_at: now
     };
@@ -1514,7 +1845,7 @@ class ControlphoneStore {
     return tradeIn;
   }
 
-  // Criação de Ordem de Serviço (Vendedor recebe aparelho de cliente)
+  // Balcão do vendedor: mesma criação validada da assistência externa (IMEI, garantia e rastreio)
   createServiceOrder(payload: {
     tenantId: string;
     customerId: string;
@@ -1529,49 +1860,23 @@ class ControlphoneStore {
     imei2?: string;
     checklist?: Record<string, 'ok' | 'fail' | 'untested'>;
     estimatedDeliveryDate?: string;
-  }): ServiceOrder {
-    const osId = 'os-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-    const osNumber = this.nextOsNumber();
-    const now = new Date().toISOString();
-
-    const newOS: ServiceOrder = {
-      id: osId,
-      tenant_id: payload.tenantId,
-      os_number: osNumber,
-      origin: 'external',
-      entered_at: now,
-      customer_id: payload.customerId,
-      intake_seller_id: payload.sellerId,
-      device_brand: payload.brand,
-      device_model: payload.model,
+  }): AssistanceResult {
+    return this.createExternalAssistance({
+      tenantId: payload.tenantId,
+      customerId: payload.customerId,
+      userId: payload.sellerId,
+      userRole: this.roleOf(payload.sellerId),
+      brand: payload.brand,
+      model: payload.model,
+      storage: payload.storage,
+      color: payload.color,
       imei: payload.imei,
-      reported_defect: payload.reportedDefect,
-      physical_condition: payload.physicalCondition,
-      device_storage: payload.storage?.trim() || undefined,
-      device_color: payload.color?.trim() || undefined,
-      imei2: payload.imei2?.trim() || undefined,
-      intake_checklist: payload.checklist,
-      estimated_delivery_date: payload.estimatedDeliveryDate || undefined,
-      status: 'waiting_diagnosis',
-      technician_parts_cost: 0,
-      technician_service_cost: 0,
-      created_at: now
-    };
-
-    this.serviceOrders.unshift(newOS);
-
-    this.addAuditLog({
-      tenant_id: payload.tenantId,
-      user_id: payload.sellerId,
-      user_role: this.roleOf(payload.sellerId),
-      action: 'OS_ABERTA',
-      module: 'Assistência Técnica',
-      record_id: osId,
-      details: { os_numero: osNumber, aparelho: `${payload.brand} ${payload.model}` }
+      imei2: payload.imei2,
+      defect: payload.reportedDefect,
+      notes: payload.physicalCondition,
+      checklist: payload.checklist,
+      estimatedDeliveryDate: payload.estimatedDeliveryDate
     });
-
-    this.saveToStorage();
-    return newOS;
   }
 
   // Técnico lança diagnóstico e custos técnicos
@@ -1588,7 +1893,9 @@ class ControlphoneStore {
     technicalNotes?: string;
   }): boolean {
     const os = this.serviceOrders.find(o => o.id === payload.osId && o.tenant_id === payload.tenantId);
-    if (!os) return false;
+    if (!os || os.closed_at || os.origin !== 'external') return false;
+    // Diagnóstico só enquanto o orçamento ainda não foi apresentado ao cliente
+    if (!['waiting_diagnosis', 'in_diagnosis', 'quote_pending_admin'].includes(os.status)) return false;
 
     os.assigned_technician_id = payload.technicianId;
     os.technician_diagnosis = payload.diagnosis;
@@ -1598,7 +1905,12 @@ class ControlphoneStore {
     os.technician_parts_cost = payload.partsCost;
     os.technician_service_cost = payload.serviceCost;
     os.estimated_delivery_date = payload.estimatedDeliveryDate || os.estimated_delivery_date;
+    const previousStatus = os.status;
     os.status = 'quote_pending_admin'; // Encaminha para o Admin aprovar o valor de cobrança
+    this.orderMovement(os, 'assistance_started', `Diagnóstico técnico registrado (OS #${os.os_number})`, {
+      userId: payload.technicianId, from: previousStatus, to: 'quote_pending_admin',
+      cost: payload.partsCost + payload.serviceCost, notes: payload.diagnosis
+    });
 
     this.addAuditLog({
       tenant_id: payload.tenantId,
@@ -1627,7 +1939,10 @@ class ControlphoneStore {
     deadline?: string;
   }): boolean {
     const os = this.serviceOrders.find(o => o.id === payload.osId && o.tenant_id === payload.tenantId);
-    if (!os) return false;
+    if (!os || os.closed_at || os.origin !== 'external') return false;
+    if (os.status !== 'quote_pending_admin' && os.status !== 'quote_ready') return false;
+    if (!this.isManager(this.roleOf(payload.adminId))) return false;
+    if (!(payload.clientQuoteAmount >= 0)) return false;
 
     os.client_quote_amount = payload.clientQuoteAmount;
     os.quote_service_description = payload.serviceDescription?.trim() || undefined;
@@ -1635,7 +1950,11 @@ class ControlphoneStore {
     os.quote_parts_description = payload.partsDescription?.trim() || undefined;
     os.quote_parts_amount = payload.partsAmount;
     os.quote_deadline = payload.deadline?.trim() || undefined;
+    const quoteFrom = os.status;
     os.status = 'quote_ready';
+    this.orderMovement(os, 'assistance_started', `Orçamento apresentado ao cliente (OS #${os.os_number})`, {
+      userId: payload.adminId, from: quoteFrom, to: 'quote_ready', cost: payload.clientQuoteAmount
+    });
 
     this.addAuditLog({
       tenant_id: payload.tenantId,
@@ -1660,14 +1979,21 @@ class ControlphoneStore {
     rejectionReason?: string;
   }): boolean {
     const os = this.serviceOrders.find(o => o.id === payload.osId && o.tenant_id === payload.tenantId);
-    if (!os) return false;
+    if (!os || os.closed_at || os.status !== 'quote_ready') return false;
+    if (!payload.approved && !payload.rejectionReason?.trim()) return false;
 
     if (payload.approved) {
       os.status = 'in_maintenance';
       os.quote_approved_at = new Date().toISOString();
+      this.orderMovement(os, 'assistance_started', `Orçamento aprovado pelo cliente: manutenção iniciada (OS #${os.os_number})`, {
+        userId: payload.sellerId, from: 'quote_ready', to: 'in_maintenance', cost: Number(os.client_quote_amount) || 0
+      });
     } else {
       os.status = 'rejected';
-      os.quote_rejected_reason = payload.rejectionReason;
+      os.quote_rejected_reason = payload.rejectionReason?.trim();
+      this.orderMovement(os, 'assistance_cancelled', `Orçamento recusado pelo cliente (OS #${os.os_number}). Aguardando devolução do aparelho`, {
+        userId: payload.sellerId, from: 'quote_ready', to: 'rejected', notes: os.quote_rejected_reason
+      });
     }
 
     this.addAuditLog({
@@ -1814,10 +2140,12 @@ class ControlphoneStore {
     }
     if (!p.model.trim() || !p.defect.trim()) return fail('Informe o modelo e o defeito apresentado.');
 
-    const imei = p.imei?.trim();
+    const typedImei = p.imei?.trim();
+    if (typedImei && !isValidImei(typedImei)) return fail(`IMEI inválido. ${IMEI_HINT}`);
+    const imei = normalizeImei(typedImei);
     if (imei) {
-      const stockDevice = this.devices.find(d => d.tenant_id === p.tenantId && d.imei === imei);
-      if (stockDevice && stockDevice.status !== 'sold') {
+      const stockDevice = this.findDeviceByImei(p.tenantId, imei);
+      if (stockDevice && stockDevice.status !== 'sold' && stockDevice.status !== 'decommissioned') {
         return fail('Este IMEI pertence a um aparelho do estoque da loja. Use a Assistência Interna.');
       }
       if (this.serviceOrders.some(o => o.tenant_id === p.tenantId && o.origin === 'external' && o.imei === imei && !o.closed_at)) {
@@ -2063,6 +2391,29 @@ class ControlphoneStore {
     return { ok: true, order: os };
   }
 
+  // Orçamento recusado: o aparelho volta ao dono sem reparo e a OS é encerrada (sem cobrança)
+  returnRejectedOrder(p: { tenantId: string; osId: string; userId: string }): AssistanceResult {
+    const os = this.findOrder(p.tenantId, p.osId);
+    if (!os) return fail('Ordem de serviço não encontrada.');
+    if (os.origin !== 'external' || os.status !== 'rejected') return fail('Esta ordem não está com o orçamento recusado.');
+    if (os.closed_at) return fail('Esta ordem de serviço já foi encerrada.');
+
+    const now = new Date().toISOString();
+    os.delivered_by_seller_id = p.userId;
+    os.delivered_at = now;
+    os.closed_at = now;
+    this.orderMovement(os, 'external_delivered', `Aparelho devolvido ao proprietário sem reparo (OS #${os.os_number})`, {
+      userId: p.userId, from: 'rejected', to: 'rejected', notes: os.quote_rejected_reason
+    });
+    this.addAuditLog({
+      tenant_id: p.tenantId, user_id: p.userId, user_role: this.roleOf(p.userId),
+      action: 'APARELHO_DEVOLVIDO_SEM_REPARO', module: 'Assistência Técnica', record_id: os.id,
+      details: { os_numero: os.os_number, motivo: os.quote_rejected_reason }
+    });
+    this.saveToStorage();
+    return { ok: true, order: os };
+  }
+
   // Técnico marca OS externa como pronta (mantido para a bancada técnica)
   markServiceOrderReady(payload: {
     tenantId: string;
@@ -2230,6 +2581,20 @@ class ControlphoneStore {
     return warranty;
   }
 
+  /** Aparelho da loja com este IMEI, em qualquer situação (disponível, vendido, baixado...). */
+  findDeviceByImei(tenantId: string, imei: string, exceptId?: string): Device | undefined {
+    const clean = normalizeImei(imei);
+    if (!clean) return undefined;
+    return this.devices.find(d => d.tenant_id === tenantId && d.id !== exceptId && normalizeImei(d.imei) === clean);
+  }
+
+  /** Encerra as garantias ativas de um aparelho que voltou a pertencer à loja. */
+  closeWarrantiesForDevice(deviceId: string, reason: string, userId?: string): string[] {
+    const active = this.warranties.filter(w => w.device_id === deviceId && w.status === 'active');
+    active.forEach(w => this.cancelWarranty(w, reason, userId));
+    return active.map(w => w.id);
+  }
+
   private cancelWarranty(w: Warranty, reason: string, userId?: string) {
     w.status = 'cancelled';
     w.cancelled_at = new Date().toISOString();
@@ -2239,10 +2604,10 @@ class ControlphoneStore {
 
   // Consulta por IMEI (assistência): devolve a garantia mais recente daquele aparelho
   findWarrantyByImei(tenantId: string, imei: string): Warranty | undefined {
-    const clean = imei.trim();
+    const clean = normalizeImei(imei);
     if (!clean) return undefined;
     const list = this.warranties
-      .filter(w => w.tenant_id === tenantId && w.imei === clean)
+      .filter(w => w.tenant_id === tenantId && normalizeImei(w.imei) === clean)
       .sort((a, b) => b.sale_date.localeCompare(a.sale_date));
     return list.find(w => w.status === 'active') || list[0];
   }

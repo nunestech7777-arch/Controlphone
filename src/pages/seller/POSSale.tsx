@@ -10,6 +10,7 @@ import { SaleDocumentsMenu } from '../../components/shared/SaleDocumentsMenu';
 import { SALE_DOCUMENTS, getSaleContext, runDocumentAction } from '../../lib/pdf/saleDocuments';
 import { PaymentMethod, Device, Accessory, Gift } from '../../types';
 import { QuickCustomerCreate } from '../../components/shared/QuickCustomerCreate';
+import { PAYMENT_METHOD_LABELS, formatBRL } from '../../lib/labels';
 
 interface CartItem {
   id: string;
@@ -30,6 +31,22 @@ interface CartGift {
   quantity: number;
   unitCost: number;
 }
+
+// Forma de pagamento adicional (a principal recebe o restante do total)
+interface ExtraPayment {
+  id: string;
+  method: PaymentMethod;
+  amount: string;
+  installments: number;
+}
+
+const PAYMENT_OPTIONS: { id: PaymentMethod; label: string }[] = [
+  { id: 'pix', label: 'PIX Instantâneo' },
+  { id: 'credit_card', label: 'Cartão de Crédito' },
+  { id: 'debit_card', label: 'Cartão de Débito' },
+  { id: 'cash', label: 'Dinheiro' }
+];
+const INSTALLMENT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 18];
 
 const salesOrigins = [
   'Instagram',
@@ -57,13 +74,19 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
   // Pagamento
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('pix');
   const [installments, setInstallments] = useState<number>(1);
+  const [extraPayments, setExtraPayments] = useState<ExtraPayment[]>([]);
   const [creditInput, setCreditInput] = useState<string>('');
   const [docNotice, setDocNotice] = useState('');
   const [finishedSale, setFinishedSale] = useState<any | null>(null);
 
-  const availableDevices = store.devices.filter(d => d.tenant_id === tenantId && d.status === 'available');
+  // Aparelho já colocado no pedido sai da lista (não pode ser vendido duas vezes)
+  const availableDevices = store.devices.filter(
+    d => d.tenant_id === tenantId && d.status === 'available' && !cartItems.some(i => i.deviceId === d.id)
+  );
   const accessories = store.accessories.filter(a => a.tenant_id === tenantId && a.quantity > 0);
   const gifts = store.gifts.filter(g => g.tenant_id === tenantId && g.quantity > 0);
+  const accessoryStock = (id?: string) => store.accessories.find(a => a.id === id)?.quantity || 0;
+  const giftStock = (id: string) => store.gifts.find(g => g.id === id)?.quantity || 0;
   const features = store.getTenantFeatures(tenantId);
   const customers = store.customers.filter(c => c.tenant_id === tenantId);
 
@@ -75,6 +98,9 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
   const creditBalance = selectedCustomerId ? store.getCustomerCreditBalance(tenantId, selectedCustomerId) : 0;
   const creditUse = Math.max(0, Math.min(parseFloat(creditInput) || 0, creditBalance, totalAmount));
   const amountDue = Math.round((totalAmount - creditUse) * 100) / 100;
+  // Pagamento dividido: as formas adicionais têm valor digitado e a principal fica com o restante
+  const extrasTotal = Math.round(extraPayments.reduce((acc, p) => acc + (parseFloat(p.amount) || 0), 0) * 100) / 100;
+  const mainAmount = Math.round((amountDue - extrasTotal) * 100) / 100;
 
   const totalCost = cartItems.reduce((acc, it) => acc + (it.unitCost * it.quantity), 0) +
     cartGifts.reduce((acc, g) => acc + (g.unitCost * g.quantity), 0);
@@ -97,6 +123,14 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
   };
 
   const handleAddAccessory = (acc: Accessory) => {
+    // Mesmo acessório de novo: soma na quantidade da linha existente, até o limite do estoque
+    if (cartItems.some(i => i.accessoryId === acc.id)) {
+      setCartItems(prev => prev.map(i =>
+        i.accessoryId === acc.id ? { ...i, quantity: Math.min(i.quantity + 1, acc.quantity) } : i
+      ));
+      setItemSelectorType(null);
+      return;
+    }
     const newItem: CartItem = {
       id: 'cart-' + Date.now(),
       itemType: 'accessory',
@@ -113,6 +147,13 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
   };
 
   const handleAddGift = (gift: Gift) => {
+    if (cartGifts.some(g => g.giftId === gift.id)) {
+      setCartGifts(prev => prev.map(g =>
+        g.giftId === gift.id ? { ...g, quantity: Math.min(g.quantity + 1, gift.quantity) } : g
+      ));
+      setItemSelectorType(null);
+      return;
+    }
     setCartGifts(prev => [
       ...prev,
       {
@@ -147,6 +188,23 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
       return;
     }
 
+    if (cartItems.some(it => !(it.unitPrice > 0))) {
+      alert('Informe um preço maior que zero para cada item.');
+      return;
+    }
+    if (cartItems.some(it => it.discount < 0 || it.discount >= it.unitPrice)) {
+      alert('O desconto de cada item não pode ser negativo nem igual ou maior que o preço.');
+      return;
+    }
+    if (extraPayments.some(p => !(parseFloat(p.amount) > 0))) {
+      alert('Informe o valor de cada forma de pagamento adicional (ou remova a linha).');
+      return;
+    }
+    if (mainAmount < 0) {
+      alert(`As formas de pagamento adicionais somam ${formatBRL(extrasTotal)}, acima do total a receber (${formatBRL(amountDue)}).`);
+      return;
+    }
+
     let sale;
     try {
       sale = store.finalizeSale({
@@ -170,9 +228,14 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
         })),
         payments: [
           ...(creditUse > 0 ? [{ paymentMethod: 'store_credit' as PaymentMethod, amount: creditUse, installments: 1 }] : []),
-          ...(amountDue > 0 || creditUse === 0
-            ? [{ paymentMethod, amount: amountDue, installments: paymentMethod === 'credit_card' ? installments : 1 }]
-            : [])
+          ...(mainAmount > 0
+            ? [{ paymentMethod, amount: mainAmount, installments: paymentMethod === 'credit_card' ? installments : 1 }]
+            : []),
+          ...extraPayments.map(p => ({
+            paymentMethod: p.method,
+            amount: Math.round(parseFloat(p.amount) * 100) / 100,
+            installments: p.method === 'credit_card' ? p.installments : 1
+          }))
         ],
         gifts: cartGifts.map(g => ({
           giftId: g.giftId,
@@ -213,12 +276,16 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
         <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm max-w-sm mx-auto text-left space-y-2 text-xs">
           <div className="flex justify-between">
             <span className="text-slate-400">Total Pago:</span>
-            <span className="font-black text-blue-600 text-sm">R$ {Number(finishedSale.total_amount).toFixed(2)}</span>
+            <span className="font-black text-blue-600 text-sm">{formatBRL(finishedSale.total_amount)}</span>
           </div>
-          <div className="flex justify-between">
-            <span className="text-slate-400">Forma de Pagamento:</span>
-            <span className="font-bold text-slate-700 uppercase">{paymentMethod}</span>
-          </div>
+          {(finishedSale.payments || []).map((p: { id: string; payment_method: PaymentMethod; amount: number; installments: number }) => (
+            <div key={p.id} className="flex justify-between">
+              <span className="text-slate-400">
+                {PAYMENT_METHOD_LABELS[p.payment_method]}{p.installments > 1 ? ` (${p.installments}x)` : ''}:
+              </span>
+              <span className="font-bold text-slate-700">{formatBRL(p.amount)}</span>
+            </div>
+          ))}
           <div className="flex justify-between">
             <span className="text-slate-400">Canal de Origem:</span>
             <span className="font-semibold text-slate-700">{finishedSale.sales_origin}</span>
@@ -235,6 +302,8 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
               setSalesOrigin('');
               setSelectedCustomerId('');
               setCreditInput('');
+              setExtraPayments([]);
+              setInstallments(1);
               setDocNotice('');
             }}
             className="px-5 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 font-bold text-xs text-slate-700"
@@ -341,11 +410,30 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
                     )}
                   </div>
 
-                  <div className="flex items-center gap-4">
+                  <div className="flex flex-wrap items-center gap-4">
+                    {item.itemType === 'accessory' && (
+                      <div>
+                        <label className="text-[10px] text-slate-400 font-bold block">Qtd (máx. {accessoryStock(item.accessoryId)})</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={accessoryStock(item.accessoryId)}
+                          step={1}
+                          value={item.quantity}
+                          onChange={(e) => {
+                            const max = accessoryStock(item.accessoryId);
+                            const val = Math.max(1, Math.min(parseInt(e.target.value) || 1, max));
+                            setCartItems(prev => prev.map(i => i.id === item.id ? { ...i, quantity: val } : i));
+                          }}
+                          className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-xs font-bold text-slate-900"
+                        />
+                      </div>
+                    )}
                     <div>
                       <label className="text-[10px] text-slate-400 font-bold block">Preço Cobrado</label>
                       <input
                         type="number"
+                        min="0.01"
                         step="0.01"
                         value={item.unitPrice}
                         onChange={(e) => {
@@ -360,6 +448,7 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
                       <label className="text-[10px] text-slate-400 font-bold block">Desconto (R$)</label>
                       <input
                         type="number"
+                        min="0"
                         step="0.01"
                         value={item.discount}
                         onChange={(e) => {
@@ -392,6 +481,21 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
                   </div>
 
                   <div className="flex items-center gap-4">
+                    <div>
+                      <label className="text-[10px] text-purple-600 font-bold block">Qtd (máx. {giftStock(gift.giftId)})</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={giftStock(gift.giftId)}
+                        step={1}
+                        value={gift.quantity}
+                        onChange={(e) => {
+                          const val = Math.max(1, Math.min(parseInt(e.target.value) || 1, giftStock(gift.giftId)));
+                          setCartGifts(prev => prev.map((g, i) => i === idx ? { ...g, quantity: val } : g));
+                        }}
+                        className="w-16 px-2 py-1 rounded-lg border border-purple-200 text-xs font-bold text-slate-900"
+                      />
+                    </div>
                     <span className="font-black text-emerald-600 text-sm">R$ 0,00</span>
                     <button
                       onClick={() => handleRemoveGift(idx)}
@@ -436,16 +540,11 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
           <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3">
             <label className="text-xs font-bold text-slate-700 block">3. Forma de Pagamento *</label>
             <div className="grid grid-cols-2 gap-2 text-xs">
-              {[
-                { id: 'pix', label: 'PIX Instantâneo' },
-                { id: 'credit_card', label: 'Cartão de Crédito' },
-                { id: 'debit_card', label: 'Cartão de Débito' },
-                { id: 'cash', label: 'Dinheiro' }
-              ].map((m) => (
+              {PAYMENT_OPTIONS.map((m) => (
                 <button
                   key={m.id}
                   type="button"
-                  onClick={() => setPaymentMethod(m.id as PaymentMethod)}
+                  onClick={() => setPaymentMethod(m.id)}
                   className={`p-2.5 rounded-xl border text-xs font-bold transition-all ${
                     paymentMethod === m.id
                       ? 'bg-tenant-action text-white border-transparent shadow-sm'
@@ -465,21 +564,83 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
                   onChange={(e) => setInstallments(parseInt(e.target.value))}
                   className="w-full text-xs px-3 py-2 rounded-xl border border-slate-200"
                 >
-                  {[1, 2, 3, 4, 5, 6, 10, 12, 18].map((n) => (
+                  {INSTALLMENT_OPTIONS.map((n) => (
                     <option key={n} value={n}>
-                      {n}x de R$ {(amountDue / n).toFixed(2)}
+                      {n}x de {formatBRL(Math.max(0, mainAmount) / n)}
                     </option>
                   ))}
                 </select>
               </div>
             )}
+
+            {/* PAGAMENTO DIVIDIDO: outras formas com valor digitado; a principal fica com o restante */}
+            {extraPayments.map((p) => (
+              <div key={p.id} className="pt-3 border-t border-slate-100 space-y-2">
+                <div className="flex items-center gap-2">
+                  <select
+                    value={p.method}
+                    onChange={(e) => setExtraPayments(prev => prev.map(x => x.id === p.id ? { ...x, method: e.target.value as PaymentMethod } : x))}
+                    aria-label="Forma de pagamento adicional"
+                    className="flex-1 min-w-0 text-xs px-2 py-2 rounded-xl border border-slate-200 font-semibold"
+                  >
+                    {PAYMENT_OPTIONS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    placeholder="Valor"
+                    value={p.amount}
+                    onChange={(e) => setExtraPayments(prev => prev.map(x => x.id === p.id ? { ...x, amount: e.target.value } : x))}
+                    aria-label="Valor desta forma de pagamento"
+                    className="w-24 text-xs px-2 py-2 rounded-xl border border-slate-200 font-bold"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setExtraPayments(prev => prev.filter(x => x.id !== p.id))}
+                    aria-label="Remover forma de pagamento"
+                    className="p-1.5 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded-lg"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+                {p.method === 'credit_card' && (
+                  <select
+                    value={p.installments}
+                    onChange={(e) => setExtraPayments(prev => prev.map(x => x.id === p.id ? { ...x, installments: parseInt(e.target.value) } : x))}
+                    aria-label="Parcelas"
+                    className="w-full text-xs px-3 py-2 rounded-xl border border-slate-200"
+                  >
+                    {INSTALLMENT_OPTIONS.map((n) => (
+                      <option key={n} value={n}>{n}x de {formatBRL((parseFloat(p.amount) || 0) / n)}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            ))}
+
+            {extraPayments.length > 0 && (
+              <p className={`text-[11px] font-bold ${mainAmount < 0 ? 'text-rose-600' : 'text-slate-600'}`}>
+                {mainAmount < 0
+                  ? `As formas adicionais passam do total em ${formatBRL(-mainAmount)}.`
+                  : `Restante em ${PAYMENT_METHOD_LABELS[paymentMethod]}: ${formatBRL(mainAmount)}`}
+              </p>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setExtraPayments(prev => [...prev, { id: 'pay-' + Date.now(), method: 'cash', amount: '', installments: 1 }])}
+              className="text-[11px] font-bold text-slate-600 hover:text-slate-900 inline-flex items-center gap-1"
+            >
+              <Plus className="w-3.5 h-3.5" /> Dividir em outra forma de pagamento
+            </button>
           </div>
 
           {/* CRÉDITO DO CLIENTE (DEVOLUÇÕES ANTERIORES) */}
           {creditBalance > 0 && (
             <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-2 text-xs">
               <label htmlFor="pos-credit" className="font-bold text-slate-700 block">
-                Crédito do cliente disponível: R$ {creditBalance.toFixed(2)}
+                Crédito do cliente disponível: {formatBRL(creditBalance)}
               </label>
               <input
                 id="pos-credit"
@@ -502,24 +663,24 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
           <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-3 text-xs">
             <div className="flex justify-between text-slate-600">
               <span>Subtotal dos Itens:</span>
-              <span className="font-semibold">R$ {subtotal.toFixed(2)}</span>
+              <span className="font-semibold">{formatBRL(subtotal)}</span>
             </div>
             {totalDiscount > 0 && (
               <div className="flex justify-between text-rose-600">
                 <span>Desconto Aplicado:</span>
-                <span className="font-bold">- R$ {totalDiscount.toFixed(2)}</span>
+                <span className="font-bold">- {formatBRL(totalDiscount)}</span>
               </div>
             )}
             {creditUse > 0 && (
               <div className="flex justify-between text-emerald-700">
                 <span>Crédito do cliente utilizado:</span>
-                <span className="font-bold">- R$ {creditUse.toFixed(2)}</span>
+                <span className="font-bold">- {formatBRL(creditUse)}</span>
               </div>
             )}
             <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
               <span className="text-sm font-extrabold text-slate-800">TOTAL A RECEBER:</span>
               <span className="text-2xl font-black text-tenant-primary">
-                R$ {amountDue.toFixed(2)}
+                {formatBRL(amountDue)}
               </span>
             </div>
 
@@ -566,7 +727,7 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
                     {/* Exibe apenas suggested_price (Custo é estritamente oculto) */}
                     <div className="text-right">
                       <span className="text-xs font-bold text-slate-400 block">Sugerido:</span>
-                      <span className="font-black text-blue-600 text-sm">R$ {Number(dev.suggested_price).toFixed(2)}</span>
+                      <span className="font-black text-blue-600 text-sm">{formatBRL(Number(dev.suggested_price))}</span>
                     </div>
                   </div>
                 ))}
@@ -582,7 +743,7 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
                       <span className="font-bold text-slate-800 block">{acc.name}</span>
                       <span className="text-[11px] text-slate-400">Estoque: {acc.quantity} un.</span>
                     </div>
-                    <span className="font-black text-slate-900">R$ {Number(acc.sale_price).toFixed(2)}</span>
+                    <span className="font-black text-slate-900">{formatBRL(Number(acc.sale_price))}</span>
                   </div>
                 ))}
 

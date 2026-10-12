@@ -5,7 +5,9 @@
 import React from 'react';
 import { ShoppingBag, RefreshCw, Wrench, Award, Target, TrendingUp, Smartphone, Plus } from 'lucide-react';
 import { store } from '../../lib/store';
+import { computeSellerRanking, getMonthRange, getSellerGoal, toMonthKey } from '../../lib/sellerRanking';
 import { useAuth } from '../../context/AuthContext';
+import { formatBRL } from '../../lib/labels';
 
 export const SellerHome: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavigate }) => {
   const { currentTenant, currentUser, currentTheme } = useAuth();
@@ -18,15 +20,15 @@ export const SellerHome: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
   );
 
   // Contagem de aparelhos vendidos pelo vendedor (acessórios não contam)
-  const myDevicesSold = mySales.reduce((acc, s) => {
-    return acc + (s.items?.filter(it => it.item_type === 'device').length || 0);
-  }, 0);
+  // no mês corrente: mesma regra do ranking (itens trocados/devolvidos e vendas canceladas não contam)
+  const currentMonth = toMonthKey(new Date());
+  const [monthFrom, monthTo] = getMonthRange(currentMonth);
+  const myDevicesSold =
+    computeSellerRanking(tenantId, monthFrom, monthTo).find(r => r.id === currentUser.id)?.units || 0;
+  const monthLabel = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
 
   // Meta individual do vendedor para o mês atual
-  const currentMonth = '2026-10';
-  const myGoal = store.goals.find(
-    g => g.tenant_id === tenantId && g.seller_id === currentUser.id && g.month_year === currentMonth
-  )?.target_device_count || 12;
+  const myGoal = getSellerGoal(tenantId, currentUser.id, currentMonth);
 
   const progressPct = Math.round((myDevicesSold / myGoal) * 100);
   const remainingDevices = Math.max(0, myGoal - myDevicesSold);
@@ -74,7 +76,7 @@ export const SellerHome: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
             </div>
             <div>
               <span className="text-xs uppercase font-extrabold tracking-wider" style={{ color: primaryColor }}>
-                Minha Meta Individual — Outubro 2026
+                Minha Meta Individual — {monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1)}
               </span>
               <h3 className="text-2xl font-black mt-0.5">
                 {myDevicesSold} de {myGoal} <span className="text-xs font-normal text-slate-400">aparelhos vendidos</span>
@@ -163,7 +165,7 @@ export const SellerHome: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
 
                 <div className="text-right">
                   <div className="font-black text-slate-900 text-sm">
-                    R$ {Number(sale.total_amount).toFixed(2)}
+                    {formatBRL(Number(sale.total_amount))}
                   </div>
                   <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
                     {sale.sales_origin}

@@ -9,6 +9,7 @@ import { useAuth } from '../../context/AuthContext';
 import { generateReceiptPDF } from '../../lib/pdf/generateReceiptPDF';
 import { Sale } from '../../types';
 import { SaleDetailModal } from '../../components/shared/SaleDetailModal';
+import { formatBRL } from '../../lib/labels';
 
 export const SellerMySales: React.FC = () => {
   const { currentTenant, currentUser, currentTheme } = useAuth();
@@ -76,7 +77,7 @@ export const SellerMySales: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 font-black text-slate-900">
-                      R$ {Number(sale.total_amount).toFixed(2)}
+                      {formatBRL(Number(sale.total_amount))}
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${

@@ -4,7 +4,7 @@
 // ============================================================================
 
 import React, { useState } from 'react';
-import { Users, X, ShieldCheck } from 'lucide-react';
+import { Users, X, ShieldCheck, Pencil } from 'lucide-react';
 import { store } from '../../lib/store';
 import { Customer } from '../../types';
 import { WarrantyDetailModal } from '../../components/shared/WarrantyDetailModal';
@@ -21,7 +21,7 @@ const RETURN_STATUS = {
   open: 'Aberta', in_review: 'Em análise', approved: 'Aprovada', rejected: 'Recusada', completed: 'Concluída', cancelled: 'Cancelada'
 };
 
-export const CustomerProfileModal: React.FC<{ customer: Customer; onClose: () => void }> = ({ customer, onClose }) => {
+export const CustomerProfileModal: React.FC<{ customer: Customer; onClose: () => void; onEdit?: (customer: Customer) => void }> = ({ customer, onClose, onEdit }) => {
   const [tab, setTab] = useState<Tab>('data');
   const [warrantyId, setWarrantyId] = useState<string | null>(null);
 
@@ -72,9 +72,20 @@ export const CustomerProfileModal: React.FC<{ customer: Customer; onClose: () =>
             </h3>
             <p className="text-xs text-slate-500 font-medium mt-0.5">Cliente desde {formatDay(customer.created_at)}</p>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 shrink-0">
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {onEdit && (
+              <button
+                type="button"
+                onClick={() => onEdit(customer)}
+                className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-xs hover:bg-slate-50 inline-flex items-center gap-1.5"
+              >
+                <Pencil className="w-3.5 h-3.5" /> Editar
+              </button>
+            )}
+            <button onClick={onClose} aria-label="Fechar" className="text-slate-400 hover:text-slate-700">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-2xl w-full sm:w-fit overflow-x-auto mb-4">

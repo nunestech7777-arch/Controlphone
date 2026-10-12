@@ -6,7 +6,7 @@
 // ============================================================================
 
 import { supabase } from './supabase';
-import { Tenant, TenantDocument, TenantDocumentType, TenantSettings, TenantTheme } from '../types';
+import { Customer, Supplier, Tenant, TenantDocument, TenantDocumentType, TenantSettings, TenantTheme } from '../types';
 
 const orNull = <T>(v: T | undefined | null | ''): T | null => (v === undefined || v === null || v === '' ? null : v);
 
@@ -108,4 +108,61 @@ export async function pushDocument(doc: TenantDocument, userId: string) {
 export async function removeDocument(tenantId: string, type: TenantDocumentType) {
   const { error } = await supabase.from('tenant_documents').delete().eq('tenant_id', tenantId).eq('type', type);
   done('a remoção do modelo', error);
+}
+
+// ---------------------------------------------------------------------------
+// CLIENTES E FORNECEDORES (primeiros cadastros operacionais gravados no banco)
+// Devolvem true/false em vez de avisar: quem chama decide o que fazer com a
+// falha (o store mantém o registro na fila de envio e tenta de novo depois).
+// ---------------------------------------------------------------------------
+
+export const customerRow = (c: Customer) => ({
+  id: c.id,
+  tenant_id: c.tenant_id,
+  name: c.name,
+  phone: c.phone,
+  whatsapp: orNull(c.whatsapp),
+  email: orNull(c.email),
+  cpf: orNull(c.cpf),
+  birth_date: orNull(c.birth_date),
+  address: orNull(c.address),
+  notes: orNull(c.notes),
+  created_at: c.created_at,
+  updated_at: new Date().toISOString()
+});
+
+export const supplierRow = (s: Supplier) => ({
+  id: s.id,
+  tenant_id: s.tenant_id,
+  name: s.name,
+  company_name: orNull(s.company_name),
+  phone: s.phone,
+  whatsapp: orNull(s.whatsapp),
+  email: orNull(s.email),
+  cpf_cnpj: orNull(s.cpf_cnpj),
+  address: orNull(s.address),
+  notes: orNull(s.notes),
+  created_at: s.created_at
+});
+
+const report = (what: string, error: { message: string } | null): boolean => {
+  if (error) console.error(`Falha ao salvar ${what}:`, error.message);
+  return !error;
+};
+
+export async function pushCustomers(customers: Customer[]): Promise<boolean> {
+  if (customers.length === 0) return true;
+  const { error } = await supabase.from('customers').upsert(customers.map(customerRow), { onConflict: 'id' });
+  return report('clientes', error);
+}
+
+export async function pushSuppliers(suppliers: Supplier[]): Promise<boolean> {
+  if (suppliers.length === 0) return true;
+  const { error } = await supabase.from('suppliers').upsert(suppliers.map(supplierRow), { onConflict: 'id' });
+  return report('fornecedores', error);
+}
+
+export async function removeSupplierRemote(supplierId: string): Promise<boolean> {
+  const { error } = await supabase.from('suppliers').delete().eq('id', supplierId);
+  return report('a exclusão do fornecedor', error);
 }

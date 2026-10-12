@@ -6,6 +6,7 @@ import React from 'react';
 import { RefreshCw, ArrowRight, Smartphone, ShieldCheck } from 'lucide-react';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
+import { formatBRL } from '../../lib/labels';
 
 export const TradeInsManagement: React.FC = () => {
   const { currentTenant } = useAuth();
@@ -76,13 +77,13 @@ export const TradeInsManagement: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 font-semibold text-purple-700">
-                      R$ {Number(item.appraisal_value).toFixed(2)}
+                      {formatBRL(Number(item.appraisal_value))}
                     </td>
                     <td className="py-3.5 px-4 text-slate-700">
-                      R$ {Number(item.sold_device_price).toFixed(2)}
+                      {formatBRL(Number(item.sold_device_price))}
                     </td>
                     <td className="py-3.5 px-4 font-black text-emerald-700">
-                      R$ {Number(item.difference_amount).toFixed(2)}
+                      {formatBRL(Number(item.difference_amount))}
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">

@@ -8,6 +8,7 @@ import { store } from '../lib/store';
 import { hexToRgbString, resolveThemeColors } from '../lib/tenantSetup';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { loadRealIdentity, translateAuthError } from '../lib/realSession';
+import { syncOnFocus, syncTenantRecords } from '../lib/realData';
 import { LoginPage } from '../pages/auth/LoginPage';
 
 const DEMO_USER_ID = 'user-admin-01';
@@ -131,15 +132,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return null;
   };
 
-  const enterDemo = () => {
-    writeDemoFlag(true);
-    store.enterDemoMode();
-    setCurrentUserId(DEMO_USER_ID);
-    setSupportSession(null);
-    setIsDemoMode(true);
-    setStatus('ready');
-  };
-
   const currentUser = store.profiles.find(p => p.id === currentUserId) || store.profiles[1] || store.profiles[0];
 
   // Se estiver em modo de suporte, o tenant ativo é o target da sessão; senão é o tenant do usuário
@@ -173,6 +165,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         dashboard_style: 'reference',
         pdf_header_style: 'standard'
       });
+
+  // Clientes e fornecedores vêm do banco: carrega ao entrar na loja e de novo ao voltar para a aba do sistema
+  const isRealSession = status === 'ready' && !isDemoMode && isSupabaseConfigured;
+  useEffect(() => {
+    if (!isRealSession || !effectiveTenantId) return;
+    const role: UserRole = isSupportMode ? 'super_admin' : currentUser.role;
+    void syncTenantRecords(effectiveTenantId, role);
+    const onFocus = () => syncOnFocus(effectiveTenantId, role);
+    const onVisible = () => { if (document.visibilityState === 'visible') onFocus(); };
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [isRealSession, effectiveTenantId, isSupportMode, currentUser.id, currentUser.role]);
 
   // Atualizar variáveis CSS globais de tema (cores específicas herdam das principais quando ausentes)
   useEffect(() => {
@@ -263,7 +273,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }
 
   if (status === 'signed_out' || !currentUser) {
-    return <LoginPage onSignIn={signIn} onEnterDemo={enterDemo} />;
+    return <LoginPage onSignIn={signIn} />;
   }
 
   return (

@@ -8,13 +8,16 @@ import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 
 export const AuditLogsView: React.FC = () => {
-  const { currentTenant, currentUser } = useAuth();
-  const tenantId = currentTenant?.id || 'tenant-itech-01';
+  const { currentTenant, currentUser, isSupportMode } = useAuth();
+  const tenantId = currentTenant?.id;
+  // Super Admin fora do modo suporte vê a plataforma inteira; os demais, só a própria loja
+  const isGlobal = currentUser.role === 'super_admin' && !isSupportMode;
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedModule, setSelectedModule] = useState('all');
 
-  const logs = store.auditLogs.filter(l => !l.tenant_id || l.tenant_id === tenantId);
+  const logs = store.auditLogs.filter(l => isGlobal || (Boolean(tenantId) && l.tenant_id === tenantId));
+  const modules = Array.from(new Set(logs.map(l => l.module))).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
   const filteredLogs = logs.filter(l => {
     const matchesModule = selectedModule === 'all' || l.module === selectedModule;
@@ -51,7 +54,7 @@ export const AuditLogsView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto overflow-x-auto">
-          {['all', 'Vendas', 'Estoque', 'Garantias', 'Assistência Técnica', 'Manutenção Interna'].map((mod) => (
+          {['all', ...modules].map((mod) => (
             <button
               key={mod}
               onClick={() => setSelectedModule(mod)}

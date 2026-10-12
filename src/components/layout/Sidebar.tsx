@@ -11,18 +11,12 @@ import {
   Wrench,
   Users,
   DollarSign,
-  Award,
-  FileText,
   ShieldCheck,
   History,
   Building2,
-  Palette,
-  LifeBuoy,
   LogOut,
   Truck,
   RotateCcw,
-  Layers,
-  ChevronDown,
   UserCheck,
   X
 } from 'lucide-react';
@@ -67,8 +61,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpe
           { id: 'super-dashboard', label: 'Painel da Plataforma', icon: LayoutDashboard },
           { id: 'super-tenants', label: 'Lojas Cadastradas', icon: Building2 },
           { id: 'super-users', label: 'Gestão de Usuários', icon: Users },
-          { id: 'super-theme', label: 'Personalizações', icon: Palette },
-          { id: 'super-sessions', label: 'Sessões de Suporte', icon: LifeBuoy },
           { id: 'super-audit', label: 'Histórico Global', icon: History },
         ];
 
@@ -84,7 +76,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpe
           { id: 'admin-customers', label: 'Clientes', icon: Users },
           { id: 'admin-financial', label: 'Financeiro', icon: DollarSign },
           { id: 'admin-team', label: 'Equipe da Loja', icon: UserCheck },
-          { id: 'admin-terms', label: 'Termos & Documentos', icon: FileText },
           { id: 'admin-audit', label: 'Histórico Atividades', icon: History },
         ];
 
@@ -95,7 +86,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpe
           { id: 'seller-warranties', label: 'Garantias', icon: ShieldCheck },
           { id: 'seller-returns', label: 'Trocas & Devoluções', icon: RotateCcw },
           { id: 'seller-os-intake', label: 'Assistência (Balcão)', icon: Wrench },
-          { id: 'seller-goals', label: 'Minha Meta', icon: Award },
         ];
 
       case 'technician':
@@ -103,7 +93,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpe
           { id: 'tech-home', label: 'Início', icon: LayoutDashboard },
           { id: 'tech-os-queue', label: 'Ordens de Serviço', icon: Wrench },
           { id: 'tech-internal-repairs', label: 'Manutenções Estoque', icon: RefreshCw },
-          { id: 'tech-history', label: 'Histórico Técnico', icon: History },
         ];
 
       default:

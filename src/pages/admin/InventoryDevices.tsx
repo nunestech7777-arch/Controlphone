@@ -4,7 +4,7 @@
 
 import React, { useState } from 'react';
 import { Smartphone, Plus, Search, Battery, Eye, Pencil, X, ArrowUp, ArrowDown, ArrowUpDown, Wrench, DollarSign } from 'lucide-react';
-import { store } from '../../lib/store';
+import { store, normalizeImei, isValidImei, IMEI_HINT } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Device } from '../../types';
 import { MetricCard } from '../../components/shared/MetricCard';
@@ -67,7 +67,7 @@ export const InventoryDevices: React.FC = () => {
     const term = searchTerm.toLowerCase();
     return (
       d.model.toLowerCase().includes(term) ||
-      d.imei.includes(searchTerm) ||
+      d.imei.includes(searchTerm.trim()) ||
       d.color.toLowerCase().includes(term) ||
       store.getSupplierName(d.supplier_id).toLowerCase().includes(term)
     );
@@ -127,14 +127,30 @@ export const InventoryDevices: React.FC = () => {
     }
 
     // Verificar se o IMEI já existe na loja
-    const existing = allDevices.find(d => d.imei === imei && d.id !== editingDeviceId);
-    if (existing) {
+    if (!isValidImei(imei)) {
+      alert(`IMEI inválido. ${IMEI_HINT}`);
+      return;
+    }
+    const cleanImei = normalizeImei(imei);
+    const cost = parseFloat(acquisitionCost);
+    const price = parseFloat(suggestedPrice);
+    if (!(cost >= 0) || !(price > 0)) {
+      alert('Informe um custo de aquisição válido e um preço sugerido maior que zero.');
+      return;
+    }
+
+    // Aparelho que a loja já vendeu (ou baixou) pode ser comprado de novo: o mesmo cadastro é reaproveitado
+    const existing = store.findDeviceByImei(tenantId, cleanImei, editingDeviceId || undefined);
+    const reentry = !editingDeviceId && existing && (existing.status === 'sold' || existing.status === 'decommissioned')
+      ? existing
+      : undefined;
+    if (existing && !reentry) {
       alert('Já existe um aparelho cadastrado com este IMEI nesta loja!');
       return;
     }
 
     const formData = {
-      imei,
+      imei: cleanImei,
       brand,
       model,
       storage_capacity: storage,
@@ -151,6 +167,18 @@ export const InventoryDevices: React.FC = () => {
     if (editing) {
       Object.assign(editing, formData);
       saved = editing;
+    } else if (reentry) {
+      store.closeWarrantiesForDevice(reentry.id, 'Aparelho recomprado pela loja', currentUser.id);
+      Object.assign(reentry, formData, {
+        origin: 'purchase', origin_trade_in_id: undefined, accumulated_repair_cost: 0,
+        status: 'available', sold_at: undefined, entry_date: new Date().toISOString()
+      });
+      saved = reentry;
+      store.recordMovement({
+        tenant_id: tenantId, device_id: saved.id, imei: saved.imei,
+        movement_type: 'stock_entry', description: 'Aparelho já vendido pela loja foi recomprado e reentrou no estoque',
+        to_status: 'available', cost: saved.acquisition_cost, user_id: currentUser.id
+      });
     } else {
       saved = {
         ...formData,
@@ -349,18 +377,18 @@ export const InventoryDevices: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 font-semibold text-slate-700 whitespace-nowrap text-right">
-                      R$ {Number(dev.acquisition_cost).toFixed(2)}
+                      {formatBRL(Number(dev.acquisition_cost))}
                     </td>
                     <td className="py-3.5 px-4 font-bold text-slate-900 whitespace-nowrap text-right">
-                      R$ {totalAccumulatedCost.toFixed(2)}
+                      {formatBRL(totalAccumulatedCost)}
                       {dev.accumulated_repair_cost > 0 && (
                         <span className="block text-[10px] text-amber-600 font-normal">
-                          (+R$ {Number(dev.accumulated_repair_cost).toFixed(2)} reparo)
+                          (+{formatBRL(Number(dev.accumulated_repair_cost))} reparo)
                         </span>
                       )}
                     </td>
                     <td className="py-3.5 px-4 font-black text-blue-600 whitespace-nowrap text-right">
-                      R$ {Number(dev.suggested_price).toFixed(2)}
+                      {formatBRL(Number(dev.suggested_price))}
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       <span className={`inline-block whitespace-nowrap px-2.5 py-1 rounded-full text-xs font-semibold border ${getDaysBadgeClass(daysInStock)}`}>
@@ -453,17 +481,17 @@ export const InventoryDevices: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="rounded-xl p-3 border border-slate-200">
                   <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Custo Aquisição</span>
-                  <span className="font-semibold text-slate-700">R$ {Number(detailDevice.acquisition_cost).toFixed(2)}</span>
+                  <span className="font-semibold text-slate-700">{formatBRL(Number(detailDevice.acquisition_cost))}</span>
                 </div>
                 <div className="rounded-xl p-3 border border-slate-200">
                   <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Custo Acumulado</span>
                   <span className="font-bold text-slate-900">
-                    R$ {(Number(detailDevice.acquisition_cost) + Number(detailDevice.accumulated_repair_cost)).toFixed(2)}
+                    {formatBRL(Number(detailDevice.acquisition_cost) + Number(detailDevice.accumulated_repair_cost))}
                   </span>
                 </div>
                 <div className="rounded-xl p-3 border border-slate-200">
                   <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Preço Sugerido</span>
-                  <span className="font-black text-blue-600">R$ {Number(detailDevice.suggested_price).toFixed(2)}</span>
+                  <span className="font-black text-blue-600">{formatBRL(Number(detailDevice.suggested_price))}</span>
                 </div>
               </div>
 
@@ -684,8 +712,10 @@ export const InventoryDevices: React.FC = () => {
                 <input
                   type="text"
                   placeholder="Ex: 354892091823712"
+                  inputMode="numeric"
+                  maxLength={15}
                   value={imei}
-                  onChange={(e) => setImei(e.target.value)}
+                  onChange={(e) => setImei(e.target.value.replace(/\D/g, ''))}
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 font-mono"
                   required
                 />

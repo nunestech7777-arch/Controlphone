@@ -149,6 +149,10 @@ export const ReturnsManagement: React.FC<{ viewId?: string }> = ({ viewId = 'adm
   const detail = requests.find(r => r.id === detailId);
   const detailSale = detail ? store.sales.find(s => s.id === detail.sale_id) : undefined;
   const newDevice = availableDevices.find(d => d.id === newDeviceId);
+  // Parte da venda original paga com aparelho usado (upgrade)
+  const upgradeCredit = (detailSale?.payments || [])
+    .filter(p => p.payment_method === 'trade_in_credit')
+    .reduce((acc, p) => acc + Number(p.amount), 0);
   const difference = detail && newDevice ? Number(newDevice.suggested_price) - Number(detail.item_paid_amount) : 0;
 
   const closeNew = () => {
@@ -566,6 +570,13 @@ export const ReturnsManagement: React.FC<{ viewId?: string }> = ({ viewId = 'adm
                           onChange={(e) => setAmount(e.target.value)} className={`${inputCls} font-bold`} required
                         />
                         <p className="text-[10px] text-slate-400 mt-1">Máximo: {formatBRL(detail.item_paid_amount)} (valor pago pelo item)</p>
+                        {upgradeCredit > 0 && (
+                          <p className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mt-2">
+                            Venda com upgrade: {formatBRL(upgradeCredit)} deste valor foram pagos com o aparelho usado, que continua
+                            com a loja. O cliente pagou {formatBRL(Number(detail.item_paid_amount) - upgradeCredit)} em dinheiro.
+                            Devolver o valor cheio significa ficar com o usado por {formatBRL(upgradeCredit)}.
+                          </p>
+                        )}
                       </div>
                       {detail.resolution === 'refund' && (
                         <div>

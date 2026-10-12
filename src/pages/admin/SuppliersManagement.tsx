@@ -10,6 +10,7 @@ import {
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Supplier, SupplierPurchaseItemType } from '../../types';
+import { formatBRL } from '../../lib/labels';
 
 const emptyForm = {
   name: '',
@@ -107,32 +108,13 @@ export const SuppliersManagement: React.FC = () => {
       notes: form.notes.trim() || undefined
     };
 
-    const editing = suppliers.find(s => s.id === editingSupplierId);
-    let recordId: string;
-    if (editing) {
-      Object.assign(editing, data);
-      recordId = editing.id;
-    } else {
-      const newSupplier: Supplier = {
-        ...data,
-        id: 'sup-' + Date.now(),
-        tenant_id: tenantId,
-        created_at: new Date().toISOString()
-      };
-      store.suppliers.unshift(newSupplier);
-      recordId = newSupplier.id;
-    }
-
-    store.addAuditLog({
-      tenant_id: tenantId,
-      user_id: currentUser.id,
-      user_role: currentUser.role,
-      action: editing ? 'FORNECEDOR_EDITADO' : 'FORNECEDOR_CADASTRADO',
-      module: 'Fornecedores',
-      record_id: recordId,
-      details: { nome: data.name, empresa: data.company_name, telefone: data.phone }
+    const result = store.saveSupplier({
+      tenantId, userId: currentUser.id, supplierId: editingSupplierId || undefined, data
     });
-    store.saveToStorage();
+    if (!result.ok) {
+      alert(result.error || 'Não foi possível salvar o fornecedor.');
+      return;
+    }
 
     setIsModalOpen(false);
     setEditingSupplierId(null);
@@ -253,7 +235,7 @@ export const SuppliersManagement: React.FC = () => {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
             <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Total Comprado</span>
-            <span className="text-lg font-black text-slate-900">R$ {totalSpent.toFixed(2)}</span>
+            <span className="text-lg font-black text-slate-900">{formatBRL(totalSpent)}</span>
           </div>
           <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
             <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Compras Registradas</span>
@@ -316,10 +298,10 @@ export const SuppliersManagement: React.FC = () => {
                     <td className="py-3.5 px-4 font-bold text-slate-800">{p.description}</td>
                     <td className="py-3.5 px-4 font-semibold text-slate-700 whitespace-nowrap text-right">{p.quantity} un.</td>
                     <td className="py-3.5 px-4 font-semibold text-slate-700 whitespace-nowrap text-right">
-                      R$ {Number(p.unit_cost).toFixed(2)}
+                      {formatBRL(Number(p.unit_cost))}
                     </td>
                     <td className="py-3.5 px-4 font-bold text-slate-900 whitespace-nowrap text-right">
-                      R$ {Number(p.total_cost).toFixed(2)}
+                      {formatBRL(Number(p.total_cost))}
                     </td>
                   </tr>
                 ))}
@@ -338,7 +320,7 @@ export const SuppliersManagement: React.FC = () => {
                       Total exibido
                     </td>
                     <td className="py-3 px-4 font-black text-slate-900 whitespace-nowrap text-right">
-                      R$ {visibleTotal.toFixed(2)}
+                      {formatBRL(visibleTotal)}
                     </td>
                   </tr>
                 </tfoot>
@@ -428,7 +410,7 @@ export const SuppliersManagement: React.FC = () => {
                     <td className="py-3.5 px-4 text-slate-600 whitespace-nowrap">{sup.cpf_cnpj || '—'}</td>
                     <td className="py-3.5 px-4 font-semibold text-slate-700 whitespace-nowrap text-right">{history.length}</td>
                     <td className="py-3.5 px-4 font-extrabold text-slate-900 whitespace-nowrap text-right">
-                      R$ {totalSpent.toFixed(2)}
+                      {formatBRL(totalSpent)}
                     </td>
                     <td className="py-3.5 px-4">
                       <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>

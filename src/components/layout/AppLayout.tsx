@@ -7,6 +7,7 @@ import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { BottomNav } from './BottomNav';
 import { useAuth } from '../../context/AuthContext';
+import { store } from '../../lib/store';
 
 interface AppLayoutProps {
   currentView: string;
@@ -36,7 +37,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentView, onNavigate, c
   };
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-[#F4F6FA] select-none pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
+    <div className="flex h-dvh overflow-hidden bg-[#F4F6FA] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
       {/* Fundo escurecido atrás do menu deslizante (só no celular) */}
       <div
         aria-hidden="true"
@@ -65,12 +66,34 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ currentView, onNavigate, c
         {/* Aviso da fase de transição: só conta, loja e equipe já vêm do banco de dados */}
         {!isDemoMode && (
           <div className="bg-amber-50 border-b border-amber-200 text-amber-800 text-[11px] font-semibold px-4 sm:px-6 py-2">
-            Lojas, usuários e senhas já são gravados no servidor. Estoque, vendas e os demais cadastros ainda ficam salvos apenas neste navegador.
+            Lojas, usuários, clientes e fornecedores já são gravados no servidor. Estoque, vendas e os demais módulos ainda ficam salvos apenas neste navegador.
+          </div>
+        )}
+
+        {/* Cadastro feito sem conexão: fica na fila e sobe sozinho quando o servidor responder */}
+        {!isDemoMode && store.hasUnsynced && (
+          <div role="status" className="bg-sky-50 border-b border-sky-200 text-sky-900 text-[11px] font-semibold px-4 sm:px-6 py-2">
+            Há cadastros de clientes ou fornecedores aguardando envio ao servidor. Eles serão enviados automaticamente
+            quando a conexão voltar; até lá, não aparecem nos outros aparelhos da loja.
+          </div>
+        )}
+
+        {/* A última gravação não coube no navegador: nada do que for feito agora fica salvo */}
+        {store.saveFailed && (
+          <div role="alert" className="bg-rose-600 text-white text-xs font-bold px-4 sm:px-6 py-2.5">
+            Atenção: não foi possível salvar os dados neste navegador (armazenamento cheio ou bloqueado). As últimas
+            alterações serão perdidas ao fechar ou recarregar a página. Não registre novas operações e fale com o suporte.
           </div>
         )}
 
         {/* CONTAINER DE CONTEÚDO */}
-        <main className={`flex-1 overflow-y-auto overscroll-contain p-3.5 sm:p-6 md:p-8 pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-8 ${isWhiteLabel ? 'tenant-themed' : ''}`}>
+        <main
+          onClickCapture={(e) => {
+            // Soltar o mouse depois de selecionar um texto (IMEI, telefone) não conta como clique na linha
+            const selection = window.getSelection();
+            if (selection && !selection.isCollapsed && (e.target as HTMLElement).closest('tr')) e.stopPropagation();
+          }}
+          className={`flex-1 overflow-y-auto overscroll-contain p-3.5 sm:p-6 md:p-8 pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-8 ${isWhiteLabel ? 'tenant-themed' : ''}`}>
           <div className="max-w-7xl mx-auto space-y-6">
             {children}
           </div>
