@@ -23,7 +23,8 @@ import {
   RotateCcw,
   Layers,
   ChevronDown,
-  UserCheck
+  UserCheck,
+  X
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { UserRole } from '../../types';
@@ -33,9 +34,12 @@ import { resolveThemeColors } from '../../lib/tenantSetup';
 interface SidebarProps {
   currentView: string;
   onNavigate: (view: string) => void;
+  /** Menu deslizante aberto (só tem efeito no celular; no desktop a sidebar é fixa) */
+  isOpen: boolean;
+  onClose: () => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpen, onClose }) => {
   const { currentUser, currentTenant, currentTheme, isWhiteLabel, isSupportMode, switchUser, availableUsers, logout, isDemoMode } = useAuth();
 
   // Itens do menu de acordo com o perfil
@@ -129,12 +133,24 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate }) => 
 
   return (
     <aside
-      className="w-64 text-white flex flex-col justify-between p-4 border-r border-white/10 shrink-0 min-h-screen select-none transition-colors duration-300"
+      className={`fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] lg:static lg:z-auto lg:w-64 lg:max-w-none lg:translate-x-0 text-white flex flex-col justify-between p-4 pt-[calc(1rem+env(safe-area-inset-top))] pb-[calc(1rem+env(safe-area-inset-bottom))] pl-[calc(1rem+env(safe-area-inset-left))] border-r border-white/10 shrink-0 select-none transition-[transform,background-color] duration-300 ${
+        isOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
+      }`}
       style={{ backgroundColor: sidebarBg }}
     >
-      <div>
+      <div className="flex-1 min-h-0 flex flex-col">
+        {/* Fechar o menu deslizante (só no celular) */}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Fechar menu"
+          className="lg:hidden absolute top-[calc(0.75rem+env(safe-area-inset-top))] right-3 p-2 rounded-full text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+        >
+          <X className="w-5 h-5" />
+        </button>
+
         {/* CABEÇALHO DA BARRA LATERAL */}
-        <div className="px-3 py-4 mb-4 border-b border-white/10">
+        <div className="px-3 py-4 mb-4 border-b border-white/10 shrink-0">
           {!isWhiteLabel ? (
             /* PAINEL SUPER ADMIN: MANTÉM A IDENTIDADE ORIGINAL CONTROLPHONE */
             <div className="flex items-center gap-3">
@@ -178,7 +194,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate }) => 
         </div>
 
         {/* NAVEGAÇÃO COM O BOTÃO ATIVO NA COR PRIMÁRIA DA LOJA */}
-        <nav className="space-y-1.5 overflow-y-auto max-h-[calc(100vh-280px)] sidebar-scroll pr-1">
+        <nav className="flex-1 min-h-0 space-y-1.5 overflow-y-auto overscroll-contain sidebar-scroll pr-1">
           {menuItems.map((item) => {
             const Icon = item.icon;
             const isActive = currentView === item.id || Boolean((item as { aliases?: string[] }).aliases?.includes(currentView));
@@ -186,7 +202,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate }) => 
               <button
                 key={item.id}
                 onClick={() => onNavigate(item.id)}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 text-sm font-medium transition-all duration-200 text-left rounded-xl ${
+                className={`w-full flex items-center gap-3 px-3.5 py-3 lg:py-2.5 text-sm font-medium transition-all duration-200 text-left rounded-xl ${
                   isActive
                     ? 'text-white font-semibold shadow-md translate-x-1'
                     : 'text-slate-400 hover:text-white hover:bg-white/5'
@@ -202,7 +218,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate }) => 
       </div>
 
       {/* PARTE INFERIOR: SELETOR DE PERFIL & BOTÃO DE LOGOUT */}
-      <div className="pt-4 border-t border-white/10 space-y-3">
+      <div className="pt-4 border-t border-white/10 space-y-3 shrink-0">
         {/* Switcher Rápido de Perfil para Demonstração e Testes */}
         {isDemoMode && (
         <div className="bg-black/30 p-2.5 rounded-xl border border-white/10">

@@ -93,7 +93,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSignIn, onEnterDemo }) =
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#0B0F17] p-4">
+    <div className="min-h-dvh flex items-center justify-center bg-[#0B0F17] p-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-6">
           <h1 className="text-2xl font-extrabold tracking-tight text-white">Controlphone</h1>

@@ -254,7 +254,7 @@ export const ReturnsManagement: React.FC<{ viewId?: string }> = ({ viewId = 'adm
             className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 bg-slate-50/50"
           />
         </div>
-        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+        <div className="grid grid-cols-1 sm:flex sm:flex-wrap sm:items-center gap-2 w-full lg:w-auto">
           <select value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value as 'all' | PeriodKey)} aria-label="Período" className={selectCls}>
             <option value="all">Todo o período</option>
             {(['today', 'week', 'month', 'last_month', 'last_3_months', 'year'] as PeriodKey[]).map(k => (

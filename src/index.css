@@ -21,11 +21,50 @@
   * {
     border-color: #E2E8F0;
   }
+  html {
+    /* iOS não aumenta o texto sozinho ao girar o aparelho */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    height: 100%;
+  }
   body {
+    /* Sem o "puxar para atualizar"/efeito elástico do navegador e sem o flash cinza do toque */
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
     background-color: #F4F6FA;
     color: #1E293B;
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100%;
+    min-height: -webkit-fill-available;
+    /* Suporte a inércia nativa do iOS */
+    -webkit-overflow-scrolling: touch;
   }
+}
+
+/* iOS Safe Area Inset Utilities */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+.pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}
+.mt-safe {
+  margin-top: env(safe-area-inset-top, 0px);
+}
+.mb-safe {
+  margin-bottom: env(safe-area-inset-bottom, 0px);
+}
+.bottom-safe {
+  bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* White Label Token Utilities */
@@ -146,5 +185,68 @@
   .modal-overlay,
   .modal-overlay > * {
     animation: none;
+  }
+}
+
+/* ============================================================================
+   CELULAR (iOS e Android / PWA)
+   ============================================================================ */
+
+/* Ícone ao lado de um título não encolhe quando o título quebra em duas linhas */
+:where(h1, h2, h3) > svg {
+  flex-shrink: 0;
+}
+
+/* Telas de toque: campos com menos de 16px fazem o iOS dar zoom na página ao focar */
+@media (hover: none) and (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Inércia de rolagem nativa e toque otimizado no Safari / iOS */
+.overflow-x-auto,
+.overflow-y-auto,
+main {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Área de toque confortável recomendada pela Apple (mínimo 44px para botões interativos chave) */
+@media (max-width: 639px) {
+  /* Modais: nunca maiores que a tela visível (dvh desconta as barras do navegador) e com rolagem própria */
+  .modal-overlay {
+    padding: 0.75rem;
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+  .modal-overlay > * {
+    max-height: calc(100dvh - 1.5rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .modal-overlay > *:not(.overflow-hidden) {
+    overflow-y: auto;
+  }
+  .modal-overlay > .p-6 {
+    padding: 1.25rem;
+  }
+
+  /* Tabelas sem largura mínima própria rolam na horizontal em vez de espremer as colunas */
+  :where(main .overflow-x-auto) > table {
+    min-width: 760px;
+  }
+}
+
+/* Modo PWA Standalone instalado na Tela de Início do iOS */
+@media all and (display-mode: standalone) {
+  body {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  input, textarea {
+    user-select: text;
+    -webkit-user-select: text;
   }
 }

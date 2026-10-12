@@ -83,13 +83,13 @@ export const SalesManagement: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2 overflow-x-auto order-2 sm:order-none">
+      <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
+        <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto order-2 sm:order-none">
           {([['all', 'Todas'], ['normal', 'Vendas normais'], ['upgrade', 'Upgrades'], ['mine', 'Minhas vendas']] as const).map(([id, label]) => (
             <button
               key={id}
               onClick={() => setTypeFilter(id)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 transition-all ${
                 typeFilter === id ? 'bg-[#0B0F17] text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
