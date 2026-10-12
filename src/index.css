@@ -1,0 +1,150 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --tenant-primary: #1845E8;
+    --tenant-secondary: #0B0F17;
+    --tenant-accent: #3B82F6;
+    --tenant-primary-rgb: 24, 69, 232;
+    --tenant-secondary-rgb: 11, 15, 23;
+    --tenant-accent-rgb: 59, 130, 246;
+    --tenant-button: #1845E8;
+    --tenant-button-rgb: 24, 69, 232;
+    --tenant-sidebar: #0B0F17;
+    --tenant-card: #FFFFFF;
+    --tenant-action: #3B82F6;
+    --tenant-action-rgb: 59, 130, 246;
+  }
+
+  * {
+    border-color: #E2E8F0;
+  }
+  body {
+    background-color: #F4F6FA;
+    color: #1E293B;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+}
+
+/* White Label Token Utilities */
+.bg-tenant-primary {
+  background-color: var(--tenant-primary) !important;
+}
+.bg-tenant-secondary {
+  background-color: var(--tenant-secondary) !important;
+}
+.bg-tenant-accent {
+  background-color: var(--tenant-accent) !important;
+}
+.text-tenant-primary {
+  color: var(--tenant-primary) !important;
+}
+.text-tenant-secondary {
+  color: var(--tenant-secondary) !important;
+}
+.text-tenant-accent {
+  color: var(--tenant-accent) !important;
+}
+.border-tenant-primary {
+  border-color: var(--tenant-primary) !important;
+}
+.ring-tenant-primary {
+  --tw-ring-color: var(--tenant-primary) !important;
+}
+.shadow-tenant-primary {
+  box-shadow: 0 8px 25px -4px rgba(var(--tenant-primary-rgb), 0.35) !important;
+}
+/* Botões principais: "Cor dos Botões" da identidade visual da loja */
+.btn-tenant-primary {
+  background-color: var(--tenant-button) !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 14px -1px rgba(var(--tenant-button-rgb), 0.35);
+  transition: all 0.2s ease;
+}
+.btn-tenant-primary:hover {
+  filter: brightness(0.92);
+}
+
+/* Botões de ação (filtros, seletores e atalhos ativos): "Cor dos Botões de Ação" */
+.bg-tenant-action {
+  background-color: var(--tenant-action) !important;
+}
+.text-tenant-action {
+  color: var(--tenant-action) !important;
+}
+
+/* Cards do ambiente da loja: "Cor dos Cards". Vale só dentro do conteúdo white label. */
+.tenant-themed .bg-white.rounded-2xl {
+  background-color: var(--tenant-card);
+}
+
+/* Custom smooth scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+/* Sidebar scrollbar */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: #1E293B;
+  border-radius: 9999px;
+}
+
+/* Animation utilities */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  /* "none" (e não translateY(0)) para o fim da animação não criar um containing block:
+     com transform ativo, os modais "fixed" ficavam presos ao wrapper da página em vez da viewport */
+  to { opacity: 1; transform: none; }
+}
+
+.animate-fade-in {
+  /* Sem "forwards": o estado final natural (sem transform) não mantém um containing block,
+     garantindo que os modais "fixed" dentro da página fiquem presos à viewport e centralizados */
+  animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Modais: apenas desfoque no fundo (sem escurecimento), sombra natural e entrada suave (200ms) */
+.modal-overlay {
+  background: transparent;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: modalOverlayIn 200ms ease-out both;
+}
+
+.modal-overlay > * {
+  box-shadow: 0 24px 48px -12px rgba(15, 23, 42, 0.18), 0 8px 16px -8px rgba(15, 23, 42, 0.1);
+  animation: modalPanelIn 200ms ease-out both;
+}
+
+@keyframes modalOverlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalPanelIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-overlay,
+  .modal-overlay > * {
+    animation: none;
+  }
+}
