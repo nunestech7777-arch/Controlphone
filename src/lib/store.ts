@@ -13,7 +13,7 @@ import { DEFAULT_FEATURES, buildDefaultTheme, isTenantOperational, sameCnpj } fr
 
 import {
   deleteRows, pushDocs, pushDocument, pushPlatformLogs, pushRows, pushSettings, pushSupportSession, pushTenant, pushTheme,
-  removeDocument, reserveNumbers
+  pushWholesaleSellerAccess, removeDocument, reserveNumbers
 } from './realSync';
 
 export interface AssistanceResult {
@@ -3675,6 +3675,12 @@ class ControlphoneStore {
     return features;
   }
 
+  /** Vendedores da loja podem vender no Atacado? (o administrador decide; exige o módulo ligado) */
+  wholesaleSellerSalesEnabled(tenantId?: string | null): boolean {
+    if (!tenantId || !this.getTenantFeatures(tenantId).wholesale) return false;
+    return this.tenantSettings[tenantId]?.wholesale_seller_sales === true;
+  }
+
   getTenantTheme(tenantId: string): TenantTheme {
     const tenant = this.tenants.find(t => t.id === tenantId);
     return this.themes[tenantId] || buildDefaultTheme(tenantId, tenant?.trade_name || 'Loja');
@@ -3883,6 +3889,25 @@ class ControlphoneStore {
       details: { ...features }
     });
     if (this.isRealMode) void pushSettings(tenantId, this.tenantSettings[tenantId]);
+    return { ok: true };
+  }
+
+  /**
+   * Administrador da loja libera (ou não) que vendedores vendam no Atacado. Contratar o módulo
+   * continua sendo só do Super Admin (updateTenantFeatures).
+   */
+  setWholesaleSellerAccess(tenantId: string, enabled: boolean, userId: string): OpResult {
+    const user = this.profiles.find(p => p.id === userId);
+    const allowed = user?.role === 'super_admin' || (user?.role === 'admin' && user.tenant_id === tenantId);
+    if (!user || !allowed) return opFail('Apenas o administrador da loja pode alterar esta permissão.');
+    if (!this.getTenantFeatures(tenantId).wholesale) return opFail('O módulo Atacado não está ativo nesta loja.');
+    this.tenantSettings[tenantId] = { ...this.tenantSettings[tenantId], wholesale_seller_sales: enabled };
+    this.addAuditLog({
+      tenant_id: tenantId, user_id: userId, user_role: user.role,
+      action: 'ATACADO_PERMISSAO_VENDEDOR', module: 'Atacado', record_id: tenantId,
+      details: { vendedores_podem_vender: enabled }
+    });
+    if (this.isRealMode) void pushWholesaleSellerAccess(tenantId, enabled);
     return { ok: true };
   }
 

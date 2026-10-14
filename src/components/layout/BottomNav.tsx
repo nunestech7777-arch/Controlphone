@@ -15,6 +15,8 @@ import {
   Users
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { store } from '../../lib/store';
+import { isViewAvailable } from '../../modules/registry';
 
 interface BottomNavProps {
   currentView: string;
@@ -23,7 +25,7 @@ interface BottomNavProps {
 }
 
 export const BottomNav: React.FC<BottomNavProps> = ({ currentView, onNavigate, onOpenMenu }) => {
-  const { currentUser, currentTheme, isSupportMode } = useAuth();
+  const { currentUser, currentTenant, currentTheme, isSupportMode } = useAuth();
   const primaryColor = currentTheme.primary_color || '#1845E8';
 
   // Configuração das ações principais de acordo com o perfil
@@ -65,7 +67,9 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentView, onNavigate, o
     return [];
   };
 
-  const navItems = getNavItems();
+  // Módulo opcional desligado não aparece nem aqui
+  const features = store.getTenantFeatures(currentTenant?.id);
+  const navItems = getNavItems().filter(item => !currentTenant || isViewAvailable(item.id, features));
 
   return (
     <nav

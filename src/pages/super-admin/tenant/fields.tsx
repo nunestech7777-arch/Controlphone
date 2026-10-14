@@ -6,6 +6,7 @@
 import React, { useRef, useState } from 'react';
 import { Check, Eye, EyeOff, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { TenantFeatures, TenantPlan, TenantStatus } from '../../../types';
+import { CORE_MODULES, OPTIONAL_MODULES } from '../../../modules/registry';
 import {
   BRAND_IMAGE_ACCEPT, FEATURE_OPTIONS, PLAN_OPTIONS, STATUS_OPTIONS, isHexColor, readBrandImage
 } from '../../../lib/tenantSetup';
@@ -251,42 +252,78 @@ export const ImageUploadField: React.FC<ImageUploadFieldProps> = ({ label, hint,
 
 // ---- Recursos da loja ----
 
+const FeatureOption: React.FC<{
+  option: (typeof FEATURE_OPTIONS)[number];
+  checked: boolean;
+  onToggle: (checked: boolean) => void;
+}> = ({ option, checked, onToggle }) => (
+  <label
+    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors text-xs ${
+      checked ? 'border-blue-300 bg-blue-50/60' : 'border-slate-200 bg-white hover:border-slate-300'
+    }`}
+  >
+    <input
+      type="checkbox"
+      checked={checked}
+      onChange={(e) => onToggle(e.target.checked)}
+      className="sr-only peer"
+    />
+    <span
+      className={`mt-0.5 w-4 h-4 rounded-md border flex items-center justify-center shrink-0 transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-blue-200 ${
+        checked ? 'bg-[#1845E8] border-[#1845E8]' : 'bg-white border-slate-300'
+      }`}
+    >
+      {checked && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+    </span>
+    <span className="min-w-0">
+      <span className="font-bold text-slate-800 block">{option.label}</span>
+      <span className="text-[11px] text-slate-500 block">{option.description}</span>
+    </span>
+  </label>
+);
+
 export const FeatureChecklist: React.FC<{
   value: TenantFeatures;
   onChange: (next: TenantFeatures) => void;
-}> = ({ value, onChange }) => (
-  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-    {FEATURE_OPTIONS.map((opt) => {
-      const checked = value[opt.key];
-      return (
-        <label
-          key={opt.key}
-          className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors text-xs ${
-            checked ? 'border-blue-300 bg-blue-50/60' : 'border-slate-200 bg-white hover:border-slate-300'
-          }`}
-        >
-          <input
-            type="checkbox"
-            checked={checked}
-            onChange={(e) => onChange({ ...value, [opt.key]: e.target.checked })}
-            className="sr-only peer"
-          />
-          <span
-            className={`mt-0.5 w-4 h-4 rounded-md border flex items-center justify-center shrink-0 transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-blue-200 ${
-              checked ? 'bg-[#1845E8] border-[#1845E8]' : 'bg-white border-slate-300'
-            }`}
-          >
-            {checked && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
-          </span>
-          <span className="min-w-0">
-            <span className="font-bold text-slate-800 block">{opt.label}</span>
-            <span className="text-[11px] text-slate-500 block">{opt.description}</span>
-          </span>
-        </label>
-      );
-    })}
-  </div>
-);
+}> = ({ value, onChange }) => {
+  const moduleKeys = new Set(OPTIONAL_MODULES.map(m => m.featureKey));
+  const resources = FEATURE_OPTIONS.filter(opt => !moduleKeys.has(opt.key));
+  const modules = FEATURE_OPTIONS.filter(opt => moduleKeys.has(opt.key));
+  const toggle = (key: keyof TenantFeatures) => (checked: boolean) => onChange({ ...value, [key]: checked });
+
+  return (
+    <div className="space-y-6">
+      <section>
+        <h3 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">Módulos da Loja</h3>
+        <p className="text-[11px] text-slate-500 mt-0.5 mb-2.5">
+          Só o Super Administrador contrata módulos. Módulo desligado some do menu, não abre telas e não consulta o banco.
+        </p>
+        <div className="flex flex-wrap gap-1.5 mb-2.5">
+          {CORE_MODULES.map(m => (
+            <span key={m.id} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 text-[11px] font-semibold text-slate-600">
+              <Check className="w-3 h-3" strokeWidth={3} />
+              {m.label}
+            </span>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+          {modules.map(opt => (
+            <FeatureOption key={opt.key} option={opt} checked={value[opt.key]} onToggle={toggle(opt.key)} />
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h3 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-2.5">Recursos do varejo</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+          {resources.map(opt => (
+            <FeatureOption key={opt.key} option={opt} checked={value[opt.key]} onToggle={toggle(opt.key)} />
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+};
 
 // ---- Plano e situação ----
 

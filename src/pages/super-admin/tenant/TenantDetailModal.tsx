@@ -6,7 +6,7 @@
 
 import React, { useState } from 'react';
 import {
-  Ban, Building2, Check, CheckCircle2, CreditCard, FileText, KeyRound, LayoutGrid, Palette, Pencil, RotateCcw,
+  Ban, Building2, Check, CheckCircle2, CreditCard, DatabaseBackup, FileText, KeyRound, LayoutGrid, Palette, Pencil, RotateCcw,
   ShieldAlert, SlidersHorizontal, Trash2, Users, X
 } from 'lucide-react';
 import { adminApi } from '../../../lib/adminApi';
@@ -23,8 +23,9 @@ import {
 import { FeatureChecklist, Field, PasswordField, PlanDraft, PlanFields, TextField, inputCls } from './fields';
 import { BrandDraft, BrandIdentityForm, brandDraftOf } from './BrandIdentityForm';
 import { DocumentSlot, TenantDocumentsForm } from './TenantDocumentsForm';
+import { TenantBackupsTab } from './TenantBackupsTab';
 
-export type TenantDetailTab = 'overview' | 'users' | 'brand' | 'documents' | 'plan' | 'features';
+export type TenantDetailTab = 'overview' | 'users' | 'brand' | 'documents' | 'plan' | 'features' | 'backups';
 
 const TABS: { id: TenantDetailTab; label: string; icon: React.ElementType }[] = [
   { id: 'overview', label: 'Visão Geral', icon: LayoutGrid },
@@ -32,7 +33,8 @@ const TABS: { id: TenantDetailTab; label: string; icon: React.ElementType }[] = 
   { id: 'brand', label: 'Identidade Visual', icon: Palette },
   { id: 'documents', label: 'Documentos', icon: FileText },
   { id: 'plan', label: 'Plano', icon: CreditCard },
-  { id: 'features', label: 'Configurações', icon: SlidersHorizontal }
+  { id: 'features', label: 'Configurações', icon: SlidersHorizontal },
+  { id: 'backups', label: 'Backups', icon: DatabaseBackup }
 ];
 
 const ROLE_GROUPS: { role: UserRole; title: string; empty: string }[] = [
@@ -642,6 +644,7 @@ export const TenantDetailModal: React.FC<TenantDetailModalProps> = ({ tenantId, 
           )}
           {tab === 'plan' && renderPlan()}
           {tab === 'features' && renderFeatures()}
+          {tab === 'backups' && <TenantBackupsTab tenant={tenant} />}
         </div>
       </div>
     </div>

@@ -16,6 +16,7 @@ import {
   Building2,
   LogOut,
   Truck,
+  Boxes,
   RotateCcw,
   UserCheck,
   X
@@ -24,6 +25,7 @@ import { useAuth } from '../../context/AuthContext';
 import { UserRole } from '../../types';
 import { store } from '../../lib/store';
 import { resolveThemeColors } from '../../lib/tenantSetup';
+import { isViewAvailable } from '../../modules/registry';
 
 interface SidebarProps {
   currentView: string;
@@ -50,6 +52,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpe
         { id: 'admin-service-orders', label: 'Assistência Técnica', icon: Wrench },
         { id: 'admin-customers', label: 'Clientes', icon: Users },
         { id: 'admin-financial', label: 'Financeiro', icon: DollarSign },
+        { id: 'wholesale', label: 'Atacado', icon: Boxes },
         { id: 'admin-team', label: 'Equipe da Loja', icon: UserCheck },
         { id: 'admin-audit', label: 'Histórico Atividades', icon: History },
       ];
@@ -75,6 +78,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpe
           { id: 'admin-service-orders', label: 'Assistência Técnica', icon: Wrench },
           { id: 'admin-customers', label: 'Clientes', icon: Users },
           { id: 'admin-financial', label: 'Financeiro', icon: DollarSign },
+          { id: 'wholesale', label: 'Atacado', icon: Boxes },
           { id: 'admin-team', label: 'Equipe da Loja', icon: UserCheck },
           { id: 'admin-audit', label: 'Histórico Atividades', icon: History },
         ];
@@ -86,6 +90,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpe
           { id: 'seller-warranties', label: 'Garantias', icon: ShieldCheck },
           { id: 'seller-returns', label: 'Trocas & Devoluções', icon: RotateCcw },
           { id: 'seller-os-intake', label: 'Assistência (Balcão)', icon: Wrench },
+          { id: 'wholesale', label: 'Atacado', icon: Boxes },
         ];
 
       case 'technician':
@@ -100,12 +105,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpe
     }
   };
 
-  // Módulos desligados nas configurações da loja não aparecem no menu
+  // Módulos opcionais desligados pelo Super Admin não aparecem no menu (registro em modules/registry.ts)
   const features = store.getTenantFeatures(currentTenant?.id);
-  const assistanceViews = ['admin-service-orders', 'seller-os-intake'];
-  const menuItems = getAllMenuItems().filter(
-    item => !isWhiteLabel || features.assistance || !assistanceViews.includes(item.id)
-  );
+  const sellersSellWholesale = store.wholesaleSellerSalesEnabled(currentTenant?.id);
+  const menuItems = getAllMenuItems().filter(item => {
+    if (!isWhiteLabel) return true;
+    if (!isViewAvailable(item.id, features)) return false;
+    // vendedor só vê o Atacado quando o administrador liberou
+    return item.id !== 'wholesale' || currentUser.role !== 'seller' || sellersSellWholesale;
+  });
 
   const getRoleBadge = (role: UserRole) => {
     switch (role) {

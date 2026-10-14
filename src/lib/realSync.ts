@@ -82,11 +82,19 @@ export async function pushTheme(theme: TenantTheme) {
 }
 
 export async function pushSettings(tenantId: string, settings: TenantSettings) {
-  const { warranty_days: _fixed, ...features } = settings; // a garantia é fixa em 90 dias
+  // A garantia é fixa em 90 dias; a permissão de venda no Atacado é do administrador da loja e
+  // só muda pela função wholesale_set_seller_access (ver modules/wholesale/data.ts)
+  const { warranty_days: _fixed, wholesale_seller_sales: _sellers, ...features } = settings;
   const { error } = await supabase
     .from('tenant_settings')
     .upsert({ tenant_id: tenantId, ...features, updated_at: new Date().toISOString() }, { onConflict: 'tenant_id' });
   done('as configurações da loja', error);
+}
+
+/** Permissão de venda do Atacado para vendedores: só a função do banco altera (ver migration 19). */
+export async function pushWholesaleSellerAccess(tenantId: string, enabled: boolean) {
+  const { error } = await supabase.rpc('wholesale_set_seller_access', { p_tenant_id: tenantId, p_enabled: enabled });
+  done('a permissão de vendas do Atacado', error);
 }
 
 export async function pushDocument(doc: TenantDocument, userId: string) {

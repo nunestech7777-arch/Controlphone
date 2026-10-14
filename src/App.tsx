@@ -2,10 +2,12 @@
 // CONTROLPHONE — APLICAÇÃO PRINCIPAL COM ROTEAMENTO DE PERFIS
 // ============================================================================
 
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppLayout } from './components/layout/AppLayout';
 import { onNavigate } from './lib/navIntent';
+import { store } from './lib/store';
+import { isViewAvailable } from './modules/registry';
 
 // Telas do Super Admin
 import { SuperDashboard } from './pages/super-admin/SuperDashboard';
@@ -29,14 +31,21 @@ import { AuditLogsView } from './pages/admin/AuditLogsView';
 import { SellerHome } from './pages/seller/SellerHome';
 import { SellerOSIntake } from './pages/seller/SellerOSIntake';
 
+// Módulos opcionais: o código só é baixado quando a loja tem o módulo e abre a tela
+const WholesaleApp = lazy(() => import('./modules/wholesale/WholesaleApp'));
+
 // Telas do Técnico
 import { TechnicianHome } from './pages/technician/TechnicianHome';
 import { TechnicianOSQueue } from './pages/technician/TechnicianOSQueue';
 import { InternalRepairsView } from './pages/technician/InternalRepairsView';
 
 const MainRouter: React.FC = () => {
-  const { currentUser, isSupportMode } = useAuth();
+  const { currentUser, currentTenant, isSupportMode } = useAuth();
   const [currentView, setCurrentView] = useState<string>('admin-dashboard');
+
+  // Tela de módulo opcional desligado nunca abre (mesmo por atalho ou navegação interna)
+  const features = store.getTenantFeatures(currentTenant?.id);
+  const viewBlocked = Boolean(currentTenant) && !isViewAvailable(currentView, features);
 
   // Atualiza a tela padrão quando o usuário ou perfil muda
   useEffect(() => {
@@ -65,6 +74,13 @@ const MainRouter: React.FC = () => {
 
   // Renderização da view atual
   const renderCurrentView = () => {
+    if (viewBlocked) {
+      const home = isSupportMode || currentUser.role === 'admin' ? <AdminDashboard />
+        : currentUser.role === 'seller' ? <SellerHome onNavigate={setCurrentView} />
+        : <TechnicianHome onNavigate={setCurrentView} />;
+      return home;
+    }
+
     // 1. SUPER ADMIN VIEWS (quando não em modo suporte)
     if (currentUser.role === 'super_admin' && !isSupportMode) {
       switch (currentView) {
@@ -119,6 +135,8 @@ const MainRouter: React.FC = () => {
           return <AuditLogsView />;
         case 'admin-audit':
           return <AuditLogsView />;
+        case 'wholesale':
+          return <Suspense fallback={null}><WholesaleApp /></Suspense>;
         default:
           return <AdminDashboard />;
       }
@@ -141,6 +159,10 @@ const MainRouter: React.FC = () => {
           return <WarrantiesManagement viewId="seller-warranties" />;
         case 'seller-returns':
           return <ReturnsManagement viewId="seller-returns" />;
+        case 'wholesale':
+          return store.wholesaleSellerSalesEnabled(currentTenant?.id)
+            ? <Suspense fallback={null}><WholesaleApp /></Suspense>
+            : <SellerHome onNavigate={setCurrentView} />;
         default:
           return <SellerHome onNavigate={setCurrentView} />;
       }

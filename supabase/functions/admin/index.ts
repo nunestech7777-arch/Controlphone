@@ -269,6 +269,7 @@ async function createTenant(caller: Caller, body: Json): Promise<Json> {
     const { error: settingsError } = await db.from('tenant_settings').upsert({
       tenant_id: tenantId,
       assistance: flag('assistance'),
+      wholesale: features.wholesale === true, // módulo opcional: só liga quando contratado
       upgrade: flag('upgrade'),
       imei_control: flag('imei_control'),
       gifts: flag('gifts'),

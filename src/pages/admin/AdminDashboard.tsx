@@ -5,6 +5,7 @@
 import React, { useState } from 'react';
 import { ShoppingBag, DollarSign, Smartphone, CalendarDays } from 'lucide-react';
 import { MetricCard } from '../../components/shared/MetricCard';
+import { StoreBackupStatus } from '../../components/shared/StoreBackupStatus';
 import { SellerRankingChart } from '../../components/charts/SellerRankingChart';
 import { TopProductsDonutChart } from '../../components/charts/TopProductsDonutChart';
 import { TrafficSourceBars } from '../../components/charts/TrafficSourceBars';
@@ -105,6 +106,7 @@ export const AdminDashboard: React.FC = () => {
           <p className="text-xs text-slate-500 font-medium">
             Resumo de vendas, estoque, assistência técnica e resultado da loja.
           </p>
+          <StoreBackupStatus />
         </div>
 
         <div className="flex flex-wrap items-center gap-2">

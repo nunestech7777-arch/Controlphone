@@ -389,7 +389,8 @@ export interface InternalRepair {
 
 // Módulos e recursos habilitados para a loja (definidos no cadastro, alteráveis depois)
 export interface TenantFeatures {
-  assistance: boolean; // Trabalha com Assistência Técnica
+  assistance: boolean; // Módulo opcional: Assistência Técnica
+  wholesale: boolean; // Módulo opcional: Atacado (contratado pelo Super Admin; começa desligado)
   upgrade: boolean; // Trabalha com Upgrade
   imei_control: boolean; // Controla estoque por IMEI
   gifts: boolean; // Trabalha com Brindes
@@ -400,6 +401,7 @@ export interface TenantFeatures {
 }
 
 export interface TenantSettings extends Partial<TenantFeatures> {
+  wholesale_seller_sales?: boolean; // administrador da loja libera vendas do Atacado para vendedores
   warranty_days?: number; // prazo comercial padrão aplicado às PRÓXIMAS vendas
 }
 

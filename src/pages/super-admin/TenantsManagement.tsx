@@ -2,7 +2,7 @@
 // CONTROLPHONE — GESTÃO DE LOJAS & SESSÃO DE SUPORTE (SUPER ADMIN)
 // ============================================================================
 
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Building2, Plus, Palette, ShieldAlert, Search, Settings2, X } from 'lucide-react';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
@@ -10,6 +10,8 @@ import { Tenant } from '../../types';
 import { isTenantOperational, planLabel, statusMeta } from '../../lib/tenantSetup';
 import { TenantWizard } from './tenant/TenantWizard';
 import { TenantDetailModal, TenantDetailTab } from './tenant/TenantDetailModal';
+import { BackupOverviewRow, backupsAvailable, fetchBackupOverview, runDueBackups } from '../../lib/backupApi';
+import { backupHealth } from '../../lib/backupFormat';
 
 export const TenantsManagement: React.FC = () => {
   const { enterSupportMode, currentUser } = useAuth();
@@ -19,6 +21,23 @@ export const TenantsManagement: React.FC = () => {
   const [detail, setDetail] = useState<{ tenantId: string; tab: TenantDetailTab } | null>(null);
   const [supportModalTenant, setSupportModalTenant] = useState<Tenant | null>(null);
   const [supportReason, setSupportReason] = useState('');
+
+  // Status do Backup: último backup de cada loja (uma consulta para a lista inteira)
+  const [backupOverview, setBackupOverview] = useState<Record<string, BackupOverviewRow> | null>(null);
+  const loadBackupOverview = useCallback(async () => {
+    if (!backupsAvailable()) return;
+    const result = await fetchBackupOverview();
+    if (result.ok) setBackupOverview(result.value);
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      await loadBackupOverview();
+      // reforço do agendamento do servidor: põe em dia os automáticos atrasados e atualiza a coluna
+      if (backupsAvailable() && (await runDueBackups()) > 0 && alive) await loadBackupOverview();
+    })();
+    return () => { alive = false; };
+  }, [loadBackupOverview]);
 
   const tenants = store.tenants;
   const term = searchTerm.trim().toLowerCase();
@@ -96,6 +115,7 @@ export const TenantsManagement: React.FC = () => {
                 <th className="py-3.5 px-4">Plano</th>
                 <th className="py-3.5 px-4">Usuários</th>
                 <th className="py-3.5 px-4 text-center">Status</th>
+                <th className="py-3.5 px-4">Status do Backup</th>
                 <th className="py-3.5 px-4 text-right">Ações do Super Admin</th>
               </tr>
             </thead>
@@ -105,6 +125,7 @@ export const TenantsManagement: React.FC = () => {
                 const logo = store.themes[tenant.id]?.logo_compact_url || store.themes[tenant.id]?.logo_url;
                 const status = statusMeta(tenant.status);
                 const operational = isTenantOperational(tenant.status);
+                const backup = backupOverview ? backupHealth(backupOverview[tenant.id]?.last_backup_at) : null;
                 return (
                   <tr key={tenant.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="py-3.5 px-4">
@@ -144,6 +165,21 @@ export const TenantsManagement: React.FC = () => {
                       <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold whitespace-nowrap ${status.badge}`}>
                         {status.label}
                       </span>
+                    </td>
+                    <td className="py-3.5 px-4 whitespace-nowrap">
+                      {backup ? (
+                        <button
+                          type="button"
+                          onClick={() => setDetail({ tenantId: tenant.id, tab: 'backups' })}
+                          className="text-left group"
+                          title="Abrir os backups desta loja"
+                        >
+                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${backup.badge}`}>{backup.label}</span>
+                          <span className="block mt-1 text-[10px] text-slate-400 group-hover:text-slate-600">{backup.text}</span>
+                        </button>
+                      ) : (
+                        <span className="text-slate-300">—</span>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-right space-x-1.5 whitespace-nowrap">
                       <button
@@ -189,7 +225,7 @@ export const TenantsManagement: React.FC = () => {
               })}
               {filteredTenants.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="py-10 px-4 text-center text-slate-400">
+                  <td colSpan={9} className="py-10 px-4 text-center text-slate-400">
                     Nenhuma loja encontrada para esta busca.
                   </td>
                 </tr>
@@ -216,7 +252,10 @@ export const TenantsManagement: React.FC = () => {
           key={detail.tenantId + detail.tab}
           tenantId={detail.tenantId}
           initialTab={detail.tab}
-          onClose={() => setDetail(null)}
+          onClose={() => {
+            setDetail(null);
+            void loadBackupOverview(); // um backup pode ter sido criado ou excluído lá dentro
+          }}
           onStartSupport={(tenant) => {
             setDetail(null);
             setSupportModalTenant(tenant);

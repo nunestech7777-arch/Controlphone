@@ -36,6 +36,7 @@ export const isTenantOperational = (status: TenantStatus) => status === 'active'
 
 export const FEATURE_OPTIONS: { key: keyof TenantFeatures; label: string; description: string }[] = [
   { key: 'assistance', label: 'Trabalha com Assistência Técnica', description: 'Ordens de serviço, orçamentos e bancada.' },
+  { key: 'wholesale', label: 'Atacado', description: 'Mini-ERP independente do varejo: estoque, clientes, vendas e financeiro próprios.' },
   { key: 'upgrade', label: 'Trabalha com Upgrade', description: 'Aparelho usado do cliente como parte do pagamento.' },
   { key: 'imei_control', label: 'Controla estoque por IMEI', description: 'Cada aparelho é rastreado individualmente pelo IMEI.' },
   { key: 'gifts', label: 'Trabalha com Brindes', description: 'Brindes com custo abatido do lucro da venda.' },
@@ -48,6 +49,7 @@ export const FEATURE_OPTIONS: { key: keyof TenantFeatures; label: string; descri
 // Lojas criadas antes destas configurações continuam com tudo habilitado
 export const DEFAULT_FEATURES: TenantFeatures = {
   assistance: true,
+  wholesale: false, // módulo opcional: só existe quando o Super Admin contrata
   upgrade: true,
   imei_control: true,
   gifts: true,
