@@ -10,7 +10,9 @@ import { useAuth } from '../../context/AuthContext';
 import { PaymentMethod } from '../../types';
 import { QuickCustomerCreate } from '../../components/shared/QuickCustomerCreate';
 import { SaleDocumentsMenu } from '../../components/shared/SaleDocumentsMenu';
-import { SALE_DOCUMENTS, getSaleContext, runDocumentAction } from '../../lib/pdf/saleDocuments';
+import { DEVICE_TYPE_LABELS } from '../../components/shared/DeviceTypeBadge';
+import { SALES_ORIGINS } from '../../lib/salesOrigins';
+import { getAutomaticDocuments, getSaleContext, runDocumentAction } from '../../lib/pdf/saleDocuments';
 
 export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavigate }) => {
   const { currentTenant, currentUser, currentTheme } = useAuth();
@@ -89,8 +91,7 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
     const newSale = store.sales.find(sl => sl.id === tradeIn.sale_id);
     if (newSale && currentTenant) {
       const ctx = getSaleContext(newSale, currentTenant, currentTheme);
-      const term = SALE_DOCUMENTS.find(d => d.id === 'warranty-term');
-      if (term && term.isAvailable(ctx)) void runDocumentAction(term, ctx, 'download');
+      getAutomaticDocuments(ctx).forEach(def => void runDocumentAction(def, ctx, 'download'));
     }
   };
 
@@ -194,10 +195,11 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
             required
           >
             <option value="">Selecione a origem...</option>
-            {['Instagram', 'WhatsApp', 'Google', 'TikTok', 'Indicação', 'Passou em frente à loja', 'Já era cliente', 'Outro'].map((o) => (
+            {SALES_ORIGINS.map((o) => (
               <option key={o} value={o}>{o}</option>
             ))}
           </select>
+          <p className="text-[11px] text-slate-500 mt-1.5">Com "Ads": o cliente chegou por anúncio pago. Sem "Ads": chegou sem anúncio (perfil, publicação, contato direto).</p>
         </div>
 
         {/* APARELHO VENDIDO DA LOJA */}
@@ -220,7 +222,7 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
                 <option value="">Selecione do estoque...</option>
                 {availableDevices.map((d) => (
                   <option key={d.id} value={d.id}>
-                    {d.brand} {d.model} ({d.storage_capacity} - {d.color}) | IMEI: {d.imei}
+                    {d.brand} {d.model} ({d.storage_capacity} - {d.color}) | IMEI: {d.imei}{d.device_type ? ` | ${DEVICE_TYPE_LABELS[d.device_type]}` : ''}
                   </option>
                 ))}
               </select>

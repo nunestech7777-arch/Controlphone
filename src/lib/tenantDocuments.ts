@@ -277,7 +277,7 @@ export const renderTenantTemplate = async (
   tenantId: string,
   type: TenantDocumentType,
   values: TemplateValues,
-  options: { autoPrint?: boolean } = {}
+  options: { autoPrint?: boolean; footer?: string[] } = {}
 ): Promise<Blob | null> => {
   const meta = findFillableTemplate(tenantId, type);
   if (!meta) return null;
@@ -309,6 +309,27 @@ export const renderTenantTemplate = async (
 
   if (filled === 0) return null;
   form.flatten(); // o documento entregue ao cliente não fica editável
+
+  // Avisos obrigatórios (ex.: comprovante de lacrado) escritos no pé da última página do modelo
+  if (options.footer && options.footer.length > 0) {
+    const { StandardFonts, rgb } = await import('pdf-lib');
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    const page = pdf.getPages()[pdf.getPageCount() - 1];
+    const size = 6.5;
+    const maxWidth = page.getWidth() - 56;
+    const wrap = (text: string) => text.split(' ').reduce<string[]>((lines, word) => {
+      const last = lines[lines.length - 1];
+      if (last !== undefined && font.widthOfTextAtSize(`${last} ${word}`, size) <= maxWidth) lines[lines.length - 1] = `${last} ${word}`;
+      else lines.push(word);
+      return lines;
+    }, []);
+    const lines = options.footer.flatMap(text => [...wrap(printable(text)), '']);
+    let y = 18 + lines.length * (size + 2);
+    lines.forEach(line => {
+      page.drawText(line, { x: 28, y, size, font, color: rgb(0.28, 0.33, 0.41) });
+      y -= size + 2;
+    });
+  }
   if (options.autoPrint) pdf.addJavaScript('print', 'this.print(true);');
   const out = await pdf.save();
   return new Blob([out.buffer as ArrayBuffer], { type: 'application/pdf' });

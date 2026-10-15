@@ -13,6 +13,9 @@ Testes que exercitam o motor de dados do app (`src/lib/store.ts`) fora do navega
 | `banco-estoque.ts` | Estoque no banco: venda, cancelamento, upgrade e manutenção em aparelhos diferentes | Sim |
 | `banco-regras-de-acesso.mjs` | Regras de acesso (RLS) de clientes e fornecedores | Sim |
 | `banco-operacional.ts` | Vendas, cancelamento, upgrade, devolução com crédito, OS, regras de acesso por perfil, numeração por loja e envio único dos registros antigos (tabela `tenant_records`) | Sim |
+| `banco-tipo-aparelho.ts` | Seminovo x lacrado: tipo no banco, comprovante escolhido automaticamente (com os avisos do lacrado), venda mista, preservação do documento, textos da loja, permissões e isolamento | Sim |
+| `banco-exclusao-aparelho.ts` | Exclusão e inativação de aparelhos: estoque e compra do fornecedor corrigidos na mesma transação, bloqueios por vínculo, falha sem alteração parcial, permissões e histórico | Sim |
+| `banco-origens.ts` | Origem do cliente e da venda (orgânico x anúncio pago): gravação no banco e relatório separado por origem | Sim |
 | `desempenho-fila.ts` | Tempo de uma gravação com muito histórico (5.000 vendas, 20.000 movimentações) | Não |
 
 ## Rodar
@@ -28,6 +31,9 @@ export QA_ADMIN_EMAIL=... QA_SELLER_EMAIL=... QA_TECH_EMAIL=... QA_PASSWORD=...
 sh scripts/qa/rodar.sh banco-clientes-fornecedores
 sh scripts/qa/rodar.sh banco-estoque
 sh scripts/qa/rodar.sh banco-operacional
+sh scripts/qa/rodar.sh banco-tipo-aparelho
+sh scripts/qa/rodar.sh banco-exclusao-aparelho
+sh scripts/qa/rodar.sh banco-origens
 node scripts/qa/banco-regras-de-acesso.mjs "$QA_SELLER_EMAIL"
 ```
 

@@ -109,6 +109,7 @@ export const CustomerProfileModal: React.FC<{ customer: Customer; onClose: () =>
             <div className={boxCls}><span className={labelCls}>E-mail</span><span className="font-semibold text-slate-800 break-all">{customer.email || 'Não informado'}</span></div>
             <div className={boxCls}><span className={labelCls}>CPF</span><span className="font-semibold text-slate-800">{customer.cpf || 'Não informado'}</span></div>
             <div className={boxCls}><span className={labelCls}>Nascimento</span><span className="font-semibold text-slate-800">{customer.birth_date ? formatDay(customer.birth_date) : 'Não informado'}</span></div>
+            <div className={boxCls}><span className={labelCls}>Origem do Cliente</span><span className="font-semibold text-slate-800">{customer.origin || 'Não informada'}</span></div>
             <div className={boxCls}><span className={labelCls}>Crédito Disponível</span><span className="font-bold text-slate-900">{formatBRL(creditBalance)}</span></div>
             <div className={`${boxCls} sm:col-span-2`}><span className={labelCls}>Endereço</span><span className="font-semibold text-slate-800">{customer.address || 'Não informado'}</span></div>
           </div>

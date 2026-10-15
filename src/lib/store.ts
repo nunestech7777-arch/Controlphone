@@ -7,7 +7,7 @@ import {
   Customer, Supplier, SupplierPurchase, Sale, TradeIn, ServiceOrder, InternalRepair,
   Expense, SalesGoal, AuditLog, SupportSession, PaymentMethod, DeviceMovement, MovementType, OSStatus,
   TenantSettings, Warranty, ReturnRequest, ReturnResolution, CustomerCredit, SaleItem, ExpenseCategory,
-  TenantDocument, TenantDocumentType, TenantFeatures, TenantPlan, TenantStatus, UserRole
+  TenantDocument, TenantDocumentType, TenantFeatures, TenantPlan, TenantStatus, UserRole, DocumentTexts, DeviceType
 } from '../types';
 import { DEFAULT_FEATURES, buildDefaultTheme, isTenantOperational, sameCnpj } from './tenantSetup';
 
@@ -96,10 +96,10 @@ export const TABLE_KINDS: TableKind[] = ['customers', 'suppliers', 'devices', 'a
 // Módulos operacionais: cada registro é gravado como documento na tabela tenant_records (migration 17).
 // A garantia sobe antes da venda para outro aparelho nunca receber uma venda sem a garantia dela.
 export type DocKind =
-  | 'customerCredits' | 'warranties' | 'tradeIns' | 'sales' | 'returnRequests' | 'serviceOrders'
+  | 'documentTexts' | 'customerCredits' | 'warranties' | 'tradeIns' | 'sales' | 'returnRequests' | 'serviceOrders'
   | 'internalRepairs' | 'expenses' | 'goals' | 'deviceMovements' | 'auditLogs';
 export const DOC_KINDS: DocKind[] = [
-  'customerCredits', 'warranties', 'tradeIns', 'sales', 'returnRequests', 'serviceOrders',
+  'documentTexts', 'customerCredits', 'warranties', 'tradeIns', 'sales', 'returnRequests', 'serviceOrders',
   'internalRepairs', 'expenses', 'goals', 'deviceMovements', 'auditLogs'
 ];
 export type SyncKind = TableKind | DocKind;
@@ -120,6 +120,7 @@ const SYNC_WRITERS: Record<SyncKind, UserRole[]> = {
   accessories: STAFF,
   gifts: STAFF,
   supplierPurchases: MANAGERS,
+  documentTexts: MANAGERS,
   customerCredits: SALES_TEAM,
   warranties: STAFF,
   tradeIns: SALES_TEAM,
@@ -152,7 +153,7 @@ const NUMBER_KINDS = Object.keys(NUMBER_RULES) as NumberKind[];
 const NUMBERS_KEY = 'controlphone_numbers_v1_';
 
 export type CustomerInput = Pick<Customer, 'name' | 'phone'> &
-  Partial<Pick<Customer, 'whatsapp' | 'email' | 'cpf' | 'birth_date' | 'address' | 'notes'>>;
+  Partial<Pick<Customer, 'whatsapp' | 'email' | 'cpf' | 'birth_date' | 'address' | 'notes' | 'origin'>>;
 export type SupplierInput = Pick<Supplier, 'name' | 'phone'> &
   Partial<Pick<Supplier, 'company_name' | 'whatsapp' | 'email' | 'cpf_cnpj' | 'address' | 'notes'>>;
 
@@ -756,6 +757,7 @@ class ControlphoneStore {
   warranties: Warranty[] = [];
   returnRequests: ReturnRequest[] = [];
   customerCredits: CustomerCredit[] = [];
+  documentTexts: DocumentTexts[] = [];
   tenantDocuments: TenantDocument[] = [];
 
   private listeners: Set<() => void> = new Set();
@@ -840,6 +842,7 @@ class ControlphoneStore {
     this.warranties = [];
     this.returnRequests = [];
     this.customerCredits = [];
+    this.documentTexts = [];
     this.tenantDocuments = [];
     this.unsynced = emptyQueue();
     this.removed = emptyQueue();
@@ -932,6 +935,7 @@ class ControlphoneStore {
         if (parsed.warranties) this.warranties = parsed.warranties;
         if (parsed.returnRequests) this.returnRequests = parsed.returnRequests;
         if (parsed.customerCredits) this.customerCredits = parsed.customerCredits;
+        if (parsed.documentTexts) this.documentTexts = parsed.documentTexts;
         if (parsed.tenantDocuments) this.tenantDocuments = parsed.tenantDocuments;
         if (parsed.unsynced) this.unsynced = { ...emptyQueue(), ...parsed.unsynced };
         if (parsed.removed) this.removed = { ...emptyQueue(), ...parsed.removed };
@@ -1273,6 +1277,7 @@ class ControlphoneStore {
       warranties: this.warranties,
       returnRequests: this.returnRequests,
       customerCredits: this.customerCredits,
+      documentTexts: this.documentTexts,
       tenantDocuments: this.tenantDocuments,
       unsynced: this.unsynced,
       removed: this.removed,
@@ -1627,7 +1632,8 @@ class ControlphoneStore {
       cpf: clean(p.data.cpf),
       birth_date: clean(p.data.birth_date),
       address: clean(p.data.address),
-      notes: clean(p.data.notes)
+      notes: clean(p.data.notes),
+      origin: clean(p.data.origin)
     };
 
     const existing = p.customerId
@@ -2030,8 +2036,9 @@ class ControlphoneStore {
 
     // 1. Processar itens e baixar estoque
     const processedItems = payload.items.map((it, idx) => {
+      let device: Device | undefined;
       if (it.itemType === 'device' && it.deviceId) {
-        const device = this.devices.find(d => d.id === it.deviceId && d.tenant_id === payload.tenantId);
+        device = this.devices.find(d => d.id === it.deviceId && d.tenant_id === payload.tenantId);
         if (device) {
           device.status = 'sold';
           device.sold_at = now;
@@ -2058,7 +2065,9 @@ class ControlphoneStore {
         unit_price: it.unitPrice,
         discount: it.discount,
         total_price: it.totalPrice,
-        warranty_days: it.itemType === 'device' ? WARRANTY_DAYS : undefined
+        // aparelho lacrado tem a garantia do fabricante: a loja não registra a garantia comercial de seminovo
+        warranty_days: it.itemType === 'device' && device?.device_type !== 'lacrado' ? WARRANTY_DAYS : undefined,
+        ...this.deviceSnapshot(device)
       };
     });
 
@@ -2105,7 +2114,8 @@ class ControlphoneStore {
       created_at: now,
       items: processedItems,
       payments: processedPayments,
-      gifts: processedGifts
+      gifts: processedGifts,
+      ...this.receiptSnapshot(payload.tenantId, processedItems)
     };
 
     this.sales.unshift(newSale);
@@ -2333,6 +2343,7 @@ class ControlphoneStore {
       physical_condition_notes: payload.receivedNotes,
       origin: 'trade_in',
       origin_trade_in_id: tradeInId,
+      device_type: 'seminovo', // aparelho usado recebido do cliente
       acquisition_cost: payload.appraisalValue,
       accumulated_repair_cost: 0.0,
       suggested_price: Math.round(payload.appraisalValue * 1.35),
@@ -2386,7 +2397,8 @@ class ControlphoneStore {
       unit_price: payload.soldDevicePrice,
       discount: 0,
       total_price: payload.soldDevicePrice,
-      warranty_days: WARRANTY_DAYS
+      warranty_days: soldDev.device_type === 'lacrado' ? undefined : WARRANTY_DAYS,
+      ...this.deviceSnapshot(soldDev)
     };
     const sale: Sale = {
       id: saleId,
@@ -2405,7 +2417,8 @@ class ControlphoneStore {
       created_at: now,
       items: [item],
       payments,
-      gifts: []
+      gifts: [],
+      ...this.receiptSnapshot(payload.tenantId, [item])
     };
     this.sales.unshift(sale);
     this.ensureWarrantyForItem(sale, item, payload.sellerId);
@@ -3140,6 +3153,168 @@ class ControlphoneStore {
   }
 
   // ==========================================================================
+  // EXCLUSÃO E INATIVAÇÃO DE APARELHOS
+  // No modo real quem decide e executa é o banco (lib/deviceRemoval). Aqui ficam as mesmas regras
+  // para a demonstração e o ajuste da cópia local depois que o servidor confirmou.
+  // ==========================================================================
+
+  /** O que impede a exclusão definitiva (mesmas regras da função delete_device do banco). */
+  deviceRemovalBlockers(deviceId: string): string[] {
+    const device = this.devices.find(d => d.id === deviceId);
+    if (!device) return ['Aparelho não encontrado'];
+    const blockers: string[] = [];
+    if (device.status === 'sold') blockers.push('Aparelho vendido');
+    else if (device.status === 'in_maintenance') blockers.push('Aparelho em manutenção');
+    else if (device.status === 'reserved') blockers.push('Aparelho reservado');
+    else if (device.status !== 'available' && device.status !== 'decommissioned') blockers.push('Aparelho aguardando avaliação');
+    if (device.origin === 'trade_in' || device.origin_trade_in_id) blockers.push('Aparelho recebido em upgrade');
+    const cites = (list: unknown[]) => list.some(rec => (rec as { tenant_id?: string }).tenant_id === device.tenant_id && JSON.stringify(rec).includes(deviceId));
+    if (cites(this.sales)) blockers.push('Venda vinculada');
+    if (cites(this.tradeIns)) blockers.push('Upgrade vinculado');
+    if (cites(this.serviceOrders)) blockers.push('Ordem de serviço vinculada');
+    if (cites(this.internalRepairs)) blockers.push('Manutenção vinculada');
+    if (cites(this.warranties)) blockers.push('Garantia vinculada');
+    if (cites(this.returnRequests)) blockers.push('Troca ou devolução vinculada');
+    if (cites(this.customerCredits)) blockers.push('Crédito de cliente vinculado');
+    if (this.deviceMovements.some(m => m.device_id === deviceId && m.movement_type !== 'stock_entry')) {
+      blockers.push('Movimentações de estoque além do cadastro');
+    }
+    return [...new Set(blockers)];
+  }
+
+  /** Compra registrada automaticamente no cadastro do aparelho (histórico do fornecedor). */
+  devicePurchases(deviceId: string): SupplierPurchase[] {
+    return this.supplierPurchases.filter(p => p.item_type === 'device' && p.item_id === deviceId);
+  }
+
+  /**
+   * Tira da cópia local o aparelho excluído e o que saiu junto com ele (compra automática e entrada
+   * no estoque). Nada disso volta para a fila de envio: o servidor já excluiu.
+   */
+  forgetDeletedDevice(deviceId: string) {
+    const purchases = new Set(this.devicePurchases(deviceId).map(p => p.id));
+    const movements = new Set(this.deviceMovements.filter(m => m.device_id === deviceId && m.movement_type === 'stock_entry').map(m => m.id));
+    this.devices = this.devices.filter(d => d.id !== deviceId);
+    this.supplierPurchases = this.supplierPurchases.filter(p => !purchases.has(p.id));
+    this.deviceMovements = this.deviceMovements.filter(m => !movements.has(m.id));
+    this.syncedJson.delete(`devices:${deviceId}`);
+    purchases.forEach(id => this.syncedJson.delete(`supplierPurchases:${id}`));
+    movements.forEach(id => this.syncedJson.delete(`deviceMovements:${id}`));
+    this.unsynced.devices = this.unsynced.devices.filter(id => id !== deviceId);
+    this.unsynced.supplierPurchases = this.unsynced.supplierPurchases.filter(id => !purchases.has(id));
+    this.unsynced.deviceMovements = this.unsynced.deviceMovements.filter(id => !movements.has(id));
+    this.saveToStorage();
+  }
+
+  /** Demonstração (sem banco): exclusão local com as mesmas regras e o mesmo histórico. */
+  deleteDeviceLocally(deviceId: string, userId: string, userRole: string): OpResult<{ purchasesRemoved: number; purchasesTotal: number }> {
+    if (!this.isManager(userRole)) return opFail('Somente o administrador da loja pode excluir ou inativar aparelhos.');
+    const device = this.devices.find(d => d.id === deviceId);
+    if (!device) return opFail('Este aparelho não foi encontrado nesta loja.');
+    if (this.deviceRemovalBlockers(deviceId).length > 0) return opFail('Não foi possível excluir este aparelho porque ele possui movimentações vinculadas.');
+    const purchases = this.devicePurchases(deviceId);
+    const total = purchases.reduce((acc, p) => acc + Number(p.total_cost), 0);
+    this.forgetDeletedDevice(deviceId);
+    this.addAuditLog({
+      tenant_id: device.tenant_id, user_id: userId, user_role: userRole,
+      action: 'APARELHO_EXCLUIDO', module: 'Estoque Aparelhos', record_id: deviceId,
+      details: { aparelho: `${device.brand} ${device.model} ${device.storage_capacity}`, imei: device.imei, custo_aquisicao: device.acquisition_cost,
+        compras_do_fornecedor_removidas: purchases.length, valor_das_compras_removidas: total, resultado: 'excluido' }
+    });
+    return { ok: true, data: { purchasesRemoved: purchases.length, purchasesTotal: total } };
+  }
+
+  /**
+   * Inativação: o aparelho sai do estoque disponível e nada é apagado. No modo real o banco já gravou
+   * (`confirmedByServer`): aqui só se ajusta a cópia local, sem reenviar.
+   */
+  deactivateDeviceLocally(p: { deviceId: string; userId: string; userRole: string; reason: string; confirmedByServer?: boolean }): OpResult {
+    const device = this.devices.find(d => d.id === p.deviceId);
+    if (!device) return opFail('Este aparelho não foi encontrado nesta loja.');
+    if (!p.confirmedByServer) {
+      if (!this.isManager(p.userRole)) return opFail('Somente o administrador da loja pode excluir ou inativar aparelhos.');
+      if (device.status !== 'available') return opFail('Somente aparelhos disponíveis no estoque podem ser inativados.');
+      if (!p.reason.trim()) return opFail('Informe o motivo da inativação.');
+    }
+    device.status = 'decommissioned';
+    if (p.confirmedByServer) {
+      this.syncedJson.set(`devices:${device.id}`, JSON.stringify(device));
+      this.saveToStorage();
+      return { ok: true };
+    }
+    this.recordMovement({
+      tenant_id: device.tenant_id, device_id: device.id, imei: device.imei, movement_type: 'decommissioned',
+      description: 'Aparelho inativado: retirado do estoque disponível', from_status: 'available', to_status: 'decommissioned',
+      notes: p.reason.trim(), user_id: p.userId
+    });
+    this.addAuditLog({
+      tenant_id: device.tenant_id, user_id: p.userId, user_role: p.userRole,
+      action: 'APARELHO_INATIVADO', module: 'Estoque Aparelhos', record_id: device.id,
+      details: { aparelho: `${device.brand} ${device.model} ${device.storage_capacity}`, imei: device.imei, motivo: p.reason.trim(), resultado: 'inativado' }
+    });
+    return { ok: true };
+  }
+
+  // ==========================================================================
+  // SEMINOVO E LACRADO: retrato do aparelho na venda e textos dos comprovantes
+  // ==========================================================================
+
+  // Tipo e identificação do aparelho no momento da venda (o comprovante não muda se o estoque mudar)
+  private deviceSnapshot(device?: Device): Pick<SaleItem, 'device_type' | 'device_info'> {
+    if (!device) return {};
+    return {
+      device_type: device.device_type,
+      device_info: {
+        brand: device.brand, model: device.model, storage_capacity: device.storage_capacity,
+        color: device.color, imei: device.imei
+      }
+    };
+  }
+
+  // Textos do comprovante vigentes no momento da venda
+  private receiptSnapshot(tenantId: string, items: SaleItem[]): Pick<Sale, 'sealed_receipt_notes' | 'receipt_version'> {
+    const notes = this.getDocumentTexts(tenantId).lacrado_notes?.trim();
+    return {
+      receipt_version: 1,
+      ...(notes && items.some(i => i.device_type === 'lacrado') ? { sealed_receipt_notes: notes } : {})
+    };
+  }
+
+  /** Textos dos comprovantes da loja (registro único; vazio = textos padrão do sistema). */
+  getDocumentTexts(tenantId: string): DocumentTexts {
+    return this.documentTexts.find(t => t.tenant_id === tenantId) || { id: 'sale-receipts', tenant_id: tenantId };
+  }
+
+  // Condições da garantia comercial dos seminovos: as da loja, ou as padrão
+  private seminovoTerms(tenantId: string): string {
+    return this.getDocumentTexts(tenantId).seminovo_terms?.trim() || DEFAULT_WARRANTY_TERMS;
+  }
+
+  /** O administrador edita os textos autorizados dos comprovantes. Os avisos obrigatórios do lacrado não mudam. */
+  saveDocumentTexts(p: { tenantId: string; userId: string; userRole: string; seminovoTerms: string; lacradoNotes: string }): OpResult {
+    if (!this.isManager(p.userRole)) return opFail('Somente administradores podem alterar os textos dos comprovantes.');
+    const seminovo = p.seminovoTerms.trim();
+    const lacrado = p.lacradoNotes.trim();
+    if (seminovo.length > 2000 || lacrado.length > 1000) return opFail('Texto muito longo.');
+    let texts = this.documentTexts.find(t => t.tenant_id === p.tenantId);
+    if (!texts) {
+      texts = { id: 'sale-receipts', tenant_id: p.tenantId };
+      this.documentTexts.push(texts);
+    }
+    texts.seminovo_terms = seminovo && seminovo !== DEFAULT_WARRANTY_TERMS ? seminovo : undefined;
+    texts.lacrado_notes = lacrado || undefined;
+    texts.updated_by = p.userId;
+    texts.updated_at = new Date().toISOString();
+    this.addAuditLog({
+      tenant_id: p.tenantId, user_id: p.userId, user_role: p.userRole,
+      action: 'TEXTOS_COMPROVANTE_ALTERADOS', module: 'Termos e Documentos', record_id: texts.id,
+      details: { seminovo_personalizado: Boolean(texts.seminovo_terms), lacrado_observacoes: Boolean(texts.lacrado_notes) }
+    });
+    this.saveToStorage();
+    return { ok: true };
+  }
+
+  // ==========================================================================
   // GARANTIAS COMERCIAIS
   // ==========================================================================
 
@@ -3156,6 +3331,7 @@ class ControlphoneStore {
   // Cria (uma única vez) a garantia do aparelho de um item de venda
   private ensureWarrantyForItem(sale: Sale, item: SaleItem, userId?: string): Warranty | undefined {
     if (item.item_type !== 'device' || !item.device_id) return undefined;
+    if (item.device_type === 'lacrado') return undefined; // garantia do fabricante, não a comercial de seminovo
     const existing = this.warranties.find(w => w.sale_item_id === item.id);
     if (existing) return existing;
 
@@ -3179,7 +3355,7 @@ class ControlphoneStore {
       warranty_days: days,
       start_date: start,
       end_date: addDays(start, days),
-      terms: DEFAULT_WARRANTY_TERMS,
+      terms: this.seminovoTerms(sale.tenant_id),
       status: returned ? 'cancelled' : 'active',
       history: [this.event(`Garantia de ${days} dias registrada na venda #${sale.sale_number}`, userId)],
       created_at: new Date().toISOString()
@@ -3471,7 +3647,8 @@ class ControlphoneStore {
         id: uid('sitem-'), sale_id: sale.id, item_type: 'device', device_id: newDevice.id, quantity: 1,
         unit_cost: Number(newDevice.acquisition_cost) + Number(newDevice.accumulated_repair_cost),
         unit_price: Number(newDevice.suggested_price), discount: 0, total_price: Number(newDevice.suggested_price),
-        warranty_days: days
+        warranty_days: days,
+        ...this.deviceSnapshot(newDevice)
       };
       sale.items = [...(sale.items || []), newItem];
       newDevice.status = 'sold';
@@ -3498,7 +3675,7 @@ class ControlphoneStore {
         device_id: newDevice.id, imei: newDevice.imei, customer_id: sale.customer_id, sale_date: sale.created_at,
         warranty_days: days, start_date: start,
         end_date: mode === 'new' ? addDays(start, days) : (originalWarranty?.end_date || addDays(start, days)),
-        terms: originalWarranty?.terms || DEFAULT_WARRANTY_TERMS, status: 'active',
+        terms: originalWarranty?.terms || this.seminovoTerms(p.tenantId), status: 'active',
         replaces_warranty_id: originalWarranty?.id,
         history: [this.event(
           mode === 'new'

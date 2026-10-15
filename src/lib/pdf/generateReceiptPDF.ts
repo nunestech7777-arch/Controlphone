@@ -4,10 +4,11 @@
 
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Sale, Tenant, TenantTheme } from '../../types';
+import { Sale, SaleItem, Tenant, TenantTheme } from '../../types';
 import { store } from '../store';
 import { formatDay, CDC_NOTICE } from '../warrantyStatus';
 import { PAYMENT_METHOD_LABELS, formatBRL as brl } from '../labels';
+import { soldDeviceInfo } from './sealedReceiptPDF';
 
 function hexToRgb(hex: string): [number, number, number] {
   const clean = hex.replace('#', '');
@@ -23,15 +24,24 @@ function hexToRgb(hex: string): [number, number, number] {
   return [r, g, b];
 }
 
+// Venda que também tem aparelho lacrado: este comprovante (seminovo) lista só os demais itens
+export interface ReceiptScope {
+  items: SaleItem[];
+  includeGifts: boolean;
+}
+
 // Monta o comprovante e devolve o documento (a saída — baixar, ver, imprimir — fica com quem chama)
 export const buildReceiptPDF = (
   sale: Sale,
   tenant: Tenant,
   sellerName: string,
   customerName: string,
-  theme?: TenantTheme
+  theme?: TenantTheme,
+  scope?: ReceiptScope
 ): { doc: jsPDF; fileName: string } => {
   const doc = new jsPDF();
+  const listed = scope ? scope.items : (sale.items || []);
+  const partial = Boolean(scope) && listed.length !== (sale.items || []).length;
   const primaryRgb = hexToRgb(theme?.primary_color || '#1845E8');
   const storeName = theme?.display_name || tenant.trade_name;
 
@@ -93,10 +103,16 @@ export const buildReceiptPDF = (
 
   // Tabela de Itens
   const deviceOf = (deviceId?: string) => store.devices.find(d => d.id === deviceId);
-  const tableRows = (sale.items || []).map((item, idx) => [
+  // aparelho como estava no momento da venda (o cadastro pode ter sido editado depois)
+  const describe = (item: SaleItem) => {
+    const info = soldDeviceInfo(item);
+    const type = item.device_type === 'seminovo' ? ' | Seminovo' : '';
+    return `Aparelho: ${info?.brand || ''} ${info?.model || 'Smartphone'} (${info?.storage_capacity || ''} - ${info?.color || ''}) | IMEI ${info?.imei || 'não informado'}${type}${item.returned_at ? ' [trocado/devolvido]' : ''}`;
+  };
+  const tableRows = listed.map((item, idx) => [
     idx + 1,
     item.item_type === 'device'
-      ? `Aparelho: ${deviceOf(item.device_id)?.brand || ''} ${deviceOf(item.device_id)?.model || 'Smartphone'} (${deviceOf(item.device_id)?.storage_capacity || ''} - ${deviceOf(item.device_id)?.color || ''}) | IMEI ${deviceOf(item.device_id)?.imei || 'não informado'}${item.returned_at ? ' [trocado/devolvido]' : ''}`
+      ? describe(item)
       : `Acessório: ${item.accessory?.name || store.accessories.find(a => a.id === item.accessory_id)?.name || 'Item'}`,
     item.quantity,
     `${brl(Number(item.unit_price))}`,
@@ -105,7 +121,7 @@ export const buildReceiptPDF = (
   ]);
 
   // Brindes inclusos
-  (sale.gifts || []).forEach((g, idx) => {
+  (scope && !scope.includeGifts ? [] : sale.gifts || []).forEach((g, idx) => {
     tableRows.push([
       `B${idx + 1}`,
       `BRINDE: ${g.gift?.name || store.gifts.find(x => x.id === g.gift_id)?.name || 'Cortesia'}`,
@@ -130,7 +146,20 @@ export const buildReceiptPDF = (
     styles: { fontSize: 8, cellPadding: 3 },
   });
 
-  const finalY = (doc as any).lastAutoTable.finalY + 10;
+  let finalY = (doc as any).lastAutoTable.finalY + 10;
+
+  // Venda com aparelho lacrado: os demais itens têm comprovante próprio; os totais abaixo são da venda inteira
+  if (partial) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    const listedTotal = listed.reduce((acc, i) => acc + Number(i.total_price), 0);
+    doc.text(
+      `Itens deste comprovante: ${brl(listedTotal)}. Esta venda também tem aparelho lacrado, com comprovante próprio; os valores abaixo são da venda completa.`,
+      14, finalY - 3, { maxWidth: 182 }
+    );
+    finalY += 6;
+  }
 
   // Totais e Pagamentos
   doc.setFont('helvetica', 'bold');
@@ -176,7 +205,9 @@ export const buildReceiptPDF = (
   // GARANTIA COMERCIAL INDIVIDUAL DE CADA APARELHO (sem custos, lucros ou margens)
   const afterTotals = Math.max(finalY + (tradeCredit > 0 ? 28 : 20), paymentBlockEnd + 4);
   let footerY = afterTotals + 8;
-  const warranties = store.warranties.filter(w => w.sale_id === sale.id);
+  // só as garantias dos aparelhos listados neste comprovante (lacrado não tem a garantia comercial de seminovo)
+  const listedIds = new Set(listed.map(i => i.id));
+  const warranties = store.warranties.filter(w => w.sale_id === sale.id && (!w.sale_item_id || listedIds.has(w.sale_item_id)));
   if (warranties.length > 0) {
     autoTable(doc, {
       startY: afterTotals,

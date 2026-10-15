@@ -7,8 +7,9 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { store } from '../store';
-import { Customer, Sale, ServiceOrder, Tenant, TenantTheme, TradeIn } from '../../types';
+import { Customer, Sale, SaleItem, ServiceOrder, Tenant, TenantTheme, TradeIn } from '../../types';
 import { buildReceiptPDF } from './generateReceiptPDF';
+import { SEALED_RECEIPT_NOTICES, buildSealedReceiptPDF } from './sealedReceiptPDF';
 import { buildWarrantyTermPDF, WarrantyTermEntry } from './warrantyTermPDF';
 import { buildServiceOrderPDF } from './serviceOrderPDF';
 import { BuiltDocument, DocumentAction, runBuiltDocumentAction } from './documentActions';
@@ -40,19 +41,45 @@ const brl = (v: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', c
 const dateBR = (iso?: string) => (iso ? new Date(iso).toLocaleDateString('pt-BR') : '—');
 const storeNameOf = (ctx: SaleDocContext) => ctx.theme?.display_name || ctx.tenant.trade_name;
 
-// Liga o documento ao modelo próprio da loja (quando houver) com os dados da venda
-const withSaleTemplate = (built: BuiltDocument, ctx: SaleDocContext, type: TenantDocumentType): BuiltDocument => ({
+// Liga o documento ao modelo próprio da loja (quando houver) com os dados da venda.
+// `items`: só os itens deste documento (venda com seminovo e lacrado tem um comprovante para cada).
+const withSaleTemplate = (
+  built: BuiltDocument, ctx: SaleDocContext, type: TenantDocumentType, items?: SaleItem[], footer?: string[]
+): BuiltDocument => ({
   ...built,
   template: {
     tenantId: ctx.tenant.id,
     type,
-    values: saleTemplateValues(ctx.sale, ctx.tenant, ctx.theme, ctx.customer, ctx.sellerName)
+    values: saleTemplateValues(items ? { ...ctx.sale, items } : ctx.sale, ctx.tenant, ctx.theme, ctx.customer, ctx.sellerName),
+    footer
   }
 });
 
+// ---- Seminovo x lacrado: o tipo gravado no item no momento da venda escolhe o comprovante.
+// Vendas anteriores a essa classificação não têm o tipo gravado e seguem no comprovante de sempre.
+const activeItems = (sale: Sale) => (sale.items || []).filter(it => !it.returned_at);
+const isSealed = (item: SaleItem) => item.item_type === 'device' && item.device_type === 'lacrado';
+const sealedItems = (sale: Sale) => activeItems(sale).filter(isSealed);
+const hasUsedDevice = (sale: Sale) => activeItems(sale).some(it => it.item_type === 'device' && !isSealed(it));
+
+/** Itens do comprovante de seminovo (o de sempre): tudo, menos os aparelhos lacrados. */
+const standardScope = (sale: Sale) => {
+  if (sealedItems(sale).length === 0) return undefined; // venda sem lacrado: comprovante inteiro, como sempre foi
+  return { items: (sale.items || []).filter(it => !isSealed(it)), includeGifts: true };
+};
+/** Itens do comprovante de lacrado; acessórios e brindes vão nele quando a venda não tem seminovo. */
+const sealedScope = (sale: Sale) => {
+  const withExtras = !hasUsedDevice(sale);
+  return {
+    items: withExtras ? activeItems(sale).filter(it => isSealed(it) || it.item_type !== 'device') : sealedItems(sale),
+    includeGifts: withExtras
+  };
+};
+
 const warrantyEntries = (sale: Sale): WarrantyTermEntry[] =>
   (sale.items || [])
-    .filter(it => it.item_type === 'device' && it.device_id && !it.returned_at)
+    // o Termo de Garantia é o contrato dos seminovos: aparelho lacrado tem a garantia do fabricante
+    .filter(it => it.item_type === 'device' && it.device_id && !it.returned_at && !isSealed(it))
     .map(item => ({
       item,
       device: store.devices.find(d => d.id === item.device_id)!,
@@ -152,12 +179,32 @@ export const SALE_DOCUMENTS: SaleDocumentDef[] = [
     id: 'receipt',
     label: 'Comprovante da Venda',
     description: 'Itens, valores e garantia de cada aparelho',
-    isAvailable: () => true,
-    build: (ctx) => withSaleTemplate(
-      buildReceiptPDF(ctx.sale, ctx.tenant, ctx.sellerName, ctx.customer?.name || 'Cliente', ctx.theme), ctx, 'sale_receipt'
-    ),
+    // venda só de lacrados não tem comprovante de seminovo
+    isAvailable: (ctx) => sealedItems(ctx.sale).length === 0 || hasUsedDevice(ctx.sale),
+    build: (ctx) => {
+      const scope = standardScope(ctx.sale);
+      return withSaleTemplate(
+        buildReceiptPDF(ctx.sale, ctx.tenant, ctx.sellerName, ctx.customer?.name || 'Cliente', ctx.theme, scope),
+        ctx, 'sale_receipt', scope?.items
+      );
+    },
     message: (ctx) =>
       `Olá ${ctx.customer?.name || ''}, segue o comprovante da sua compra na ${storeNameOf(ctx)} (venda nº ${ctx.sale.sale_number}, total ${brl(ctx.sale.total_amount)}).`
+  },
+  {
+    id: 'receipt-sealed',
+    label: 'Comprovante de Venda — Lacrado',
+    description: 'Aparelho novo e lacrado, com os avisos de garantia do fabricante e de cupom não fiscal',
+    isAvailable: (ctx) => sealedItems(ctx.sale).length > 0,
+    build: (ctx) => {
+      const scope = sealedScope(ctx.sale);
+      return withSaleTemplate(
+        buildSealedReceiptPDF({ ...ctx, items: scope.items, includeGifts: scope.includeGifts }),
+        ctx, 'sale_receipt_sealed', scope.items, SEALED_RECEIPT_NOTICES
+      );
+    },
+    message: (ctx) =>
+      `Olá ${ctx.customer?.name || ''}, segue o comprovante da sua compra do aparelho lacrado na ${storeNameOf(ctx)} (venda nº ${ctx.sale.sale_number}).`
   },
   {
     id: 'upgrade-declaration',
@@ -187,7 +234,21 @@ export const getSaleContext = (sale: Sale, tenant: Tenant, theme?: TenantTheme):
   sellerName: store.profiles.find(p => p.id === sale.seller_id)?.full_name || 'Vendedor'
 });
 
-export const getAvailableDocuments = (ctx: SaleDocContext) => SALE_DOCUMENTS.filter(d => d.isAvailable(ctx));
+// Nome do comprovante de sempre conforme a venda: "Seminovo" quando há aparelho classificado como seminovo
+const labelFor = (def: SaleDocumentDef, ctx: SaleDocContext): SaleDocumentDef =>
+  def.id === 'receipt' && activeItems(ctx.sale).some(it => it.item_type === 'device' && it.device_type === 'seminovo')
+    ? { ...def, label: 'Comprovante de Venda — Seminovo' }
+    : def;
+
+export const getAvailableDocuments = (ctx: SaleDocContext) =>
+  SALE_DOCUMENTS.filter(d => d.isAvailable(ctx)).map(d => labelFor(d, ctx));
+
+/**
+ * Documentos baixados automaticamente ao concluir a venda: o Termo de Garantia dos seminovos e,
+ * quando há aparelho lacrado, o comprovante de lacrado. O vendedor não escolhe nada.
+ */
+export const getAutomaticDocuments = (ctx: SaleDocContext) =>
+  SALE_DOCUMENTS.filter(d => (d.id === 'warranty-term' || d.id === 'receipt-sealed') && d.isAvailable(ctx));
 
 /** Executa a ação e devolve uma mensagem curta para a tela (vazia quando não há o que avisar). */
 export async function runDocumentAction(def: SaleDocumentDef, ctx: SaleDocContext, action: DocumentAction): Promise<string> {

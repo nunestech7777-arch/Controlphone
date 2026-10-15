@@ -11,6 +11,7 @@ import { CustomerProfileModal } from './CustomerProfileModal';
 import { consumeIntent } from '../../lib/navIntent';
 import { isValidCPF, maskCPF, maskPhone } from '../../lib/tenantSetup';
 import { formatBRL } from '../../lib/labels';
+import { SALES_ORIGINS } from '../../lib/salesOrigins';
 
 export const CustomersCRM: React.FC = () => {
   const { currentTenant, currentUser } = useAuth();
@@ -30,6 +31,7 @@ export const CustomersCRM: React.FC = () => {
   const [email, setEmail] = useState('');
   const [cpf, setCpf] = useState('');
   const [birthDate, setBirthDate] = useState('');
+  const [origin, setOrigin] = useState('');
   const [address, setAddress] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formError, setFormError] = useState('');
@@ -52,7 +54,7 @@ export const CustomersCRM: React.FC = () => {
 
   const resetForm = () => {
     setEditingId(null);
-    setName(''); setPhone(''); setWhatsapp(''); setEmail(''); setCpf(''); setBirthDate(''); setAddress('');
+    setName(''); setPhone(''); setWhatsapp(''); setEmail(''); setCpf(''); setBirthDate(''); setAddress(''); setOrigin('');
     setFormError('');
   };
 
@@ -69,6 +71,7 @@ export const CustomersCRM: React.FC = () => {
     setEmail(cust.email || '');
     setCpf(cust.cpf || '');
     setBirthDate(cust.birth_date || '');
+    setOrigin(cust.origin || '');
     setAddress(cust.address || '');
     setFormError('');
     setProfileId(null);
@@ -89,7 +92,7 @@ export const CustomersCRM: React.FC = () => {
     }
     const result = store.saveCustomer({
       tenantId, userId: currentUser.id, customerId: editingId || undefined,
-      data: { name, phone, whatsapp, email, cpf, birth_date: birthDate, address }
+      data: { name, phone, whatsapp, email, cpf, birth_date: birthDate, address, origin }
     });
     if (!result.ok) {
       setFormError(result.error || 'Não foi possível salvar o cliente.');
@@ -306,6 +309,22 @@ export const CustomersCRM: React.FC = () => {
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label htmlFor="customer-origin" className="font-bold text-slate-700 block mb-1">Origem do Cliente</label>
+                <select
+                  id="customer-origin"
+                  value={origin}
+                  onChange={(e) => setOrigin(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 bg-white"
+                >
+                  <option value="">Não informada</option>
+                  {/* cliente antigo com origem fora da lista atual continua com a dele */}
+                  {origin && !(SALES_ORIGINS as readonly string[]).includes(origin) && <option value={origin}>{origin}</option>}
+                  {SALES_ORIGINS.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+                <p className="text-[11px] text-slate-500 mt-1">Com "Ads": veio de anúncio pago. Sem "Ads": chegou sem anúncio.</p>
               </div>
 
               <div>

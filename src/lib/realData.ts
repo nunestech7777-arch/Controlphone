@@ -44,11 +44,11 @@ const readableTables = (role: UserRole): TableKind[] =>
 // Vendedor não lê despesas nem histórico de atividades; técnico lê só o que é da bancada.
 const readableDocs = (role: UserRole): DocKind[] => {
   if (role === 'admin' || role === 'super_admin') {
-    return ['customerCredits', 'warranties', 'tradeIns', 'sales', 'returnRequests', 'serviceOrders',
+    return ['documentTexts', 'customerCredits', 'warranties', 'tradeIns', 'sales', 'returnRequests', 'serviceOrders',
       'internalRepairs', 'expenses', 'goals', 'deviceMovements', 'auditLogs'];
   }
   if (role === 'seller') {
-    return ['customerCredits', 'warranties', 'tradeIns', 'sales', 'returnRequests', 'serviceOrders',
+    return ['documentTexts', 'customerCredits', 'warranties', 'tradeIns', 'sales', 'returnRequests', 'serviceOrders',
       'internalRepairs', 'goals', 'deviceMovements'];
   }
   return ['warranties', 'serviceOrders', 'internalRepairs', 'deviceMovements'];
@@ -222,6 +222,9 @@ export function watchTenantRecords(tenantId: string, role: UserRole): () => void
   (['devices', 'accessories', 'gifts', 'customers'] as const).forEach(table => {
     channel.on('postgres_changes', { event: '*', schema: 'public', table, filter: `tenant_id=eq.${tenantId}` }, () => refresh(table));
   });
+  // Exclusão de aparelho: o banco não filtra exclusões por loja (o aviso traz só o id), então
+  // qualquer exclusão em devices só dispara a releitura do estoque desta loja
+  channel.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'devices' }, () => refresh('devices'));
   // o servidor só avisa dos tipos de documento que este perfil pode ler
   channel.on(
     'postgres_changes',

@@ -11,8 +11,11 @@ import { TemplateValues, findFillableTemplate, renderTenantTemplate } from '../t
 export interface BuiltDocument {
   doc: jsPDF; // layout padrão do sistema (usado quando a loja não tem modelo próprio preenchível)
   fileName: string;
-  /** Modelo próprio da loja para este documento e os dados que o preenchem */
-  template?: { tenantId: string; type: TenantDocumentType; values: TemplateValues };
+  /**
+   * Modelo próprio da loja para este documento e os dados que o preenchem. `footer`: avisos obrigatórios
+   * que o sistema escreve no fim do modelo, mesmo que a loja não tenha previsto campo para eles.
+   */
+  template?: { tenantId: string; type: TenantDocumentType; values: TemplateValues; footer?: string[] };
 }
 
 export type DocumentAction = 'view' | 'download' | 'print' | 'whatsapp' | 'email';
@@ -41,7 +44,9 @@ const usesTenantTemplate = (built: BuiltDocument) =>
 async function renderCustom(built: BuiltDocument, autoPrint = false): Promise<Blob | null> {
   if (!built.template || !usesTenantTemplate(built)) return null;
   try {
-    return await renderTenantTemplate(built.template.tenantId, built.template.type, built.template.values, { autoPrint });
+    return await renderTenantTemplate(built.template.tenantId, built.template.type, built.template.values, {
+      autoPrint, footer: built.template.footer
+    });
   } catch (err) {
     console.warn('Modelo da loja indisponível; documento gerado no layout padrão.', err);
     return null;

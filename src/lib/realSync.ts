@@ -138,6 +138,7 @@ export const customerRow = (c: Customer) => ({
   birth_date: orNull(c.birth_date),
   address: orNull(c.address),
   notes: orNull(c.notes),
+  origin: orNull(c.origin),
   created_at: c.created_at,
   updated_at: new Date().toISOString()
 });
@@ -168,6 +169,7 @@ export const deviceRow = (d: Device) => ({
   storage_capacity: d.storage_capacity,
   color: d.color || '',
   battery_health: d.battery_health ?? null,
+  device_type: orNull(d.device_type),
   physical_condition_notes: orNull(d.physical_condition_notes),
   supplier_id: uuidOrNull(d.supplier_id),
   origin: d.origin,
@@ -358,4 +360,67 @@ export async function pushPlatformLogs(logs: AuditLog[]): Promise<boolean> {
   }
   console.error('Falha ao salvar o histórico da plataforma:', error.message);
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// EXCLUSÃO E INATIVAÇÃO DE APARELHOS (funções do banco, migration 22)
+// Todas as regras são conferidas no servidor; aqui só se traduz a resposta.
+// ---------------------------------------------------------------------------
+
+export interface DeviceRemovalCheck {
+  canDelete: boolean;
+  blockers: string[];
+  canDeactivate: boolean;
+  purchasesCount: number;
+  purchasesTotal: number;
+}
+
+export type DeviceRemovalResult =
+  | { ok: true; purchasesRemoved: number; purchasesTotal: number }
+  | { ok: false; error: string; blockers?: string[] };
+
+// Mensagem simples para a tela (nunca o erro técnico do banco)
+function removalError(error: { message?: string; code?: string; details?: string } | null): { error: string; blockers?: string[] } {
+  const message = error?.message || '';
+  if (message.includes('APARELHO_VINCULADO')) {
+    return {
+      error: 'Não foi possível excluir este aparelho porque ele possui movimentações vinculadas.',
+      blockers: (error?.details || '').split(';').map(s => s.trim()).filter(Boolean)
+    };
+  }
+  if (message.includes('SEM_PERMISSAO') || error?.code === '42501') return { error: 'Somente o administrador da loja pode excluir ou inativar aparelhos.' };
+  if (message.includes('APARELHO_NAO_ENCONTRADO')) return { error: 'Este aparelho não foi encontrado nesta loja. Ele pode já ter sido excluído em outro aparelho.' };
+  if (message.includes('APARELHO_INDISPONIVEL')) return { error: 'Somente aparelhos disponíveis no estoque podem ser inativados.' };
+  if (message.includes('MOTIVO_OBRIGATORIO')) return { error: 'Informe o motivo da inativação.' };
+  if (message.includes('FALHA_SIMULADA')) return { error: 'A operação falhou e nada foi alterado.' };
+  if (!error?.code || /fetch|network|Failed/i.test(message)) {
+    return { error: 'Não foi possível concluir agora. Verifique a conexão e tente de novo; nada foi alterado.' };
+  }
+  return { error: 'Não foi possível concluir a operação. Nada foi alterado; tente de novo.' };
+}
+
+export async function checkDeviceRemoval(deviceId: string): Promise<DeviceRemovalCheck | { error: string }> {
+  const { data, error } = await supabase.rpc('device_removal_check', { p_device_id: deviceId });
+  if (error || !data) return { error: removalError(error).error };
+  const row = data as { can_delete: boolean; blockers: string[]; can_deactivate: boolean; purchases_count: number; purchases_total: number };
+  return {
+    canDelete: Boolean(row.can_delete),
+    blockers: row.blockers || [],
+    canDeactivate: Boolean(row.can_deactivate),
+    purchasesCount: Number(row.purchases_count) || 0,
+    purchasesTotal: Number(row.purchases_total) || 0
+  };
+}
+
+export async function deleteDeviceOnServer(deviceId: string, simulateFailure = false): Promise<DeviceRemovalResult> {
+  const { data, error } = await supabase.rpc('delete_device', { p_device_id: deviceId, p_simulate_failure: simulateFailure });
+  if (error || !data) return { ok: false, ...removalError(error) };
+  const row = data as { purchases_removed: number; purchases_total: number };
+  return { ok: true, purchasesRemoved: Number(row.purchases_removed) || 0, purchasesTotal: Number(row.purchases_total) || 0 };
+}
+
+export async function deactivateDeviceOnServer(deviceId: string, reason: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await supabase.rpc('deactivate_device', { p_device_id: deviceId, p_reason: reason });
+  if (error) return { ok: false, error: removalError(error).error };
+  return { ok: true };
 }

@@ -6,6 +6,7 @@ import React, { useState } from 'react';
 import { UserPlus } from 'lucide-react';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
+import { SALES_ORIGINS } from '../../lib/salesOrigins';
 
 interface QuickCustomerCreateProps {
   tenantId: string;
@@ -18,11 +19,12 @@ export const QuickCustomerCreate: React.FC<QuickCustomerCreateProps> = ({ tenant
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [cpf, setCpf] = useState('');
+  const [origin, setOrigin] = useState('');
   const [error, setError] = useState('');
 
   const handleSave = () => {
     const result = store.saveCustomer({
-      tenantId, userId: currentUser.id, data: { name, phone, cpf }, origin: 'cadastro rápido na venda'
+      tenantId, userId: currentUser.id, data: { name, phone, cpf, origin }, origin: 'cadastro rápido na venda'
     });
     if (!result.ok || !result.data) {
       setError(result.error || 'Não foi possível cadastrar o cliente.');
@@ -30,7 +32,7 @@ export const QuickCustomerCreate: React.FC<QuickCustomerCreateProps> = ({ tenant
     }
     onCreated(result.data.id);
     setOpen(false);
-    setName(''); setPhone(''); setCpf(''); setError('');
+    setName(''); setPhone(''); setCpf(''); setOrigin(''); setError('');
   };
 
   if (!open) {
@@ -51,10 +53,14 @@ export const QuickCustomerCreate: React.FC<QuickCustomerCreateProps> = ({ tenant
   return (
     <div className="rounded-xl border border-slate-200 p-3 space-y-2 text-xs">
       <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Novo cliente</span>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <input type="text" placeholder="Nome completo *" value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
         <input type="text" placeholder="Telefone / WhatsApp *" value={phone} onChange={(e) => setPhone(e.target.value)} className={inputCls} />
         <input type="text" placeholder="CPF (opcional)" value={cpf} onChange={(e) => setCpf(e.target.value)} className={inputCls} />
+        <select aria-label="Origem do Cliente" value={origin} onChange={(e) => setOrigin(e.target.value)} className={`${inputCls} bg-white`}>
+          <option value="">Origem do cliente (opcional)</option>
+          {SALES_ORIGINS.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
       </div>
       {error && <p className="text-[11px] font-semibold text-rose-600">{error}</p>}
       <div className="flex justify-end gap-2">

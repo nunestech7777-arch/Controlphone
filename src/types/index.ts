@@ -41,6 +41,7 @@ export type MovementType =
   | 'external_received'
   | 'external_completed'
   | 'external_delivered'
+  | 'decommissioned'
   | 'returned_by_customer'
   | 'return_released_to_stock';
 
@@ -126,6 +127,8 @@ export interface Customer {
   birth_date?: string;
   address?: string;
   notes?: string;
+  /** Como o cliente conheceu a loja (lib/salesOrigins). Vazio em clientes cadastrados antes deste campo */
+  origin?: string;
   created_at: string;
 }
 
@@ -160,6 +163,9 @@ export interface SupplierPurchase {
   created_at: string;
 }
 
+// Tipo comercial do aparelho: define o comprovante e os termos usados na venda
+export type DeviceType = 'seminovo' | 'lacrado';
+
 export interface Device {
   id: string;
   tenant_id: string;
@@ -169,6 +175,8 @@ export interface Device {
   storage_capacity: string;
   color: string;
   battery_health?: number;
+  /** Seminovo ou novo e lacrado. Aparelhos cadastrados antes deste campo ficam sem tipo até o administrador classificar */
+  device_type?: DeviceType;
   physical_condition_notes?: string; // "Observações" do aparelho (texto livre)
   photos?: string[];
   supplier_id?: string;
@@ -222,6 +230,10 @@ export interface SaleItem {
   discount: number;
   total_price: number;
   warranty_days?: number; // Prazo comercial registrado no momento da venda (somente aparelhos)
+  /** Tipo do aparelho NO MOMENTO da venda: escolhe o comprovante e não muda se o estoque for alterado depois */
+  device_type?: DeviceType;
+  /** Identificação do aparelho no momento da venda (o comprovante não muda se o cadastro for editado depois) */
+  device_info?: { brand: string; model: string; storage_capacity: string; color: string; imei: string };
   returned_at?: string; // Item trocado/devolvido: deixa de contar em vendas, ranking e receita
   return_request_id?: string;
   return_type?: ReturnResolution;
@@ -284,6 +296,10 @@ export interface Sale {
   payments?: SalePayment[];
   gifts?: SaleGift[];
   adjustments?: SaleAdjustment[];
+  /** Observações do comprovante de lacrado vigentes no momento da venda (definidas pelo administrador) */
+  sealed_receipt_notes?: string;
+  /** Versão dos modelos de comprovante usados nesta venda */
+  receipt_version?: number;
 }
 
 export interface TradeIn {
@@ -406,7 +422,20 @@ export interface TenantSettings extends Partial<TenantFeatures> {
 }
 
 // Modelos de documento próprios de cada loja (PDF), sempre vinculados ao tenant
-export type TenantDocumentType = 'warranty_term' | 'service_order' | 'upgrade_contract' | 'sale_receipt';
+export type TenantDocumentType = 'warranty_term' | 'service_order' | 'upgrade_contract' | 'sale_receipt' | 'sale_receipt_sealed';
+
+// Textos dos comprovantes que o administrador da loja pode editar (um registro por loja).
+// Os avisos obrigatórios do comprovante de lacrado não ficam aqui: são fixos no documento.
+export interface DocumentTexts {
+  id: string;
+  tenant_id: string;
+  /** Condições da garantia comercial dos seminovos (vale para as vendas feitas depois da alteração) */
+  seminovo_terms?: string;
+  /** Observações adicionais do comprovante de lacrado, acima dos avisos obrigatórios */
+  lacrado_notes?: string;
+  updated_by?: string;
+  updated_at?: string;
+}
 
 export interface TenantDocument {
   id: string;

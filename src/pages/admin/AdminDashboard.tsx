@@ -12,6 +12,7 @@ import { TrafficSourceBars } from '../../components/charts/TrafficSourceBars';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { computeStockMetrics, formatBRL, pendingStockNote } from '../../lib/stockMetrics';
+import { salesByOrigin } from '../../lib/salesOrigins';
 import { DASHBOARD_PERIODS, PERIOD_LABELS, PeriodKey, getPeriodRange, toInputDate } from '../../lib/sellerRanking';
 
 export const AdminDashboard: React.FC = () => {
@@ -60,14 +61,13 @@ export const AdminDashboard: React.FC = () => {
     return date >= from && date <= to && (s.items || []).some(it => !it.returned_at);
   });
 
-  // Origem das vendas (canal de atração)
-  const originCounts: Record<string, number> = {};
-  periodSales.forEach(s => {
-    originCounts[s.sales_origin] = (originCounts[s.sales_origin] || 0) + 1;
-  });
-  const trafficSources = Object.keys(originCounts)
-    .map(orig => ({ name: orig, percentage: Math.round((originCounts[orig] / periodSales.length) * 100) }))
-    .sort((a, b) => b.percentage - a.percentage);
+  // Origem das vendas (canal de atração): cada origem separada, com quantidade e faturamento.
+  // "Instagram" e "Instagram Ads" são linhas diferentes (orgânico x anúncio pago), nunca somadas.
+  const trafficSources = salesByOrigin(periodSales).map(row => ({
+    name: row.origin,
+    percentage: Math.round((row.count / periodSales.length) * 100),
+    valueText: `${row.count} ${row.count === 1 ? 'venda' : 'vendas'} · ${formatBRL(row.revenue)}`
+  }));
 
   // Produtos mais vendidos (unidades por modelo de aparelho ou acessório)
   const productUnits: Record<string, number> = {};

@@ -7,8 +7,10 @@ import { ShoppingBag, Smartphone, Package, Gift as GiftIcon, Users, Plus, Trash2
 import { store, WARRANTY_DAYS } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { SaleDocumentsMenu } from '../../components/shared/SaleDocumentsMenu';
-import { SALE_DOCUMENTS, getSaleContext, runDocumentAction } from '../../lib/pdf/saleDocuments';
-import { PaymentMethod, Device, Accessory, Gift } from '../../types';
+import { SALES_ORIGINS } from '../../lib/salesOrigins';
+import { DeviceTypeBadge, DEVICE_TYPE_LABELS } from '../../components/shared/DeviceTypeBadge';
+import { getAutomaticDocuments, getSaleContext, runDocumentAction } from '../../lib/pdf/saleDocuments';
+import { SaleItem, PaymentMethod, Device, Accessory, Gift } from '../../types';
 import { QuickCustomerCreate } from '../../components/shared/QuickCustomerCreate';
 import { PAYMENT_METHOD_LABELS, formatBRL } from '../../lib/labels';
 
@@ -48,16 +50,6 @@ const PAYMENT_OPTIONS: { id: PaymentMethod; label: string }[] = [
 ];
 const INSTALLMENT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 18];
 
-const salesOrigins = [
-  'Instagram',
-  'WhatsApp',
-  'Google',
-  'TikTok',
-  'Indicação',
-  'Passou em frente à loja',
-  'Já era cliente',
-  'Outro'
-];
 
 export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavigate }) => {
   const { currentTenant, currentUser, currentTheme } = useAuth();
@@ -112,7 +104,7 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
       itemType: 'device',
       deviceId: device.id,
       title: `${device.brand} ${device.model}`,
-      details: `${device.storage_capacity} - ${device.color} (IMEI: ${device.imei})`,
+      details: `${device.storage_capacity} - ${device.color} (IMEI: ${device.imei})${device.device_type ? ` | ${DEVICE_TYPE_LABELS[device.device_type]}` : ''}`,
       quantity: 1,
       unitPrice: Number(device.suggested_price),
       discount: 0,
@@ -251,11 +243,11 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
 
     setFinishedSale(sale);
 
-    // Termo de Garantia gerado automaticamente ao concluir a venda (quando há aparelho)
+    // Documentos gerados automaticamente ao concluir a venda: Termo de Garantia (seminovo) e,
+    // se houver aparelho lacrado, o comprovante de lacrado. O modelo sai do tipo de cada aparelho.
     if (currentTenant) {
       const ctx = getSaleContext(sale, currentTenant, currentTheme);
-      const term = SALE_DOCUMENTS.find(d => d.id === 'warranty-term');
-      if (term && term.isAvailable(ctx)) void runDocumentAction(term, ctx, 'download');
+      getAutomaticDocuments(ctx).forEach(def => void runDocumentAction(def, ctx, 'download'));
     }
   };
 
@@ -270,7 +262,9 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
           Venda #{finishedSale.sale_number} Finalizada com Sucesso!
         </h2>
         <p className="text-xs text-slate-500 font-medium max-w-md mx-auto">
-          O estoque foi baixado automaticamente. O Termo de Garantia foi gerado e baixado; os demais documentos estão em "Documentos da Venda".
+          O estoque foi baixado automaticamente. {(finishedSale.items as SaleItem[] | undefined)?.some(i => i.device_type === 'lacrado')
+            ? 'O comprovante do aparelho lacrado foi gerado e baixado'
+            : 'O Termo de Garantia foi gerado e baixado'}; os demais documentos estão em "Documentos da Venda".
         </p>
 
         <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm max-w-sm mx-auto text-left space-y-2 text-xs">
@@ -530,10 +524,11 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
               required
             >
               <option value="">Selecione o canal de origem...</option>
-              {salesOrigins.map((orig) => (
+              {SALES_ORIGINS.map((orig) => (
                 <option key={orig} value={orig}>{orig}</option>
               ))}
             </select>
+            <p className="text-[11px] text-slate-500 mt-1.5">Com "Ads": o cliente chegou por anúncio pago. Sem "Ads": chegou sem anúncio (perfil, publicação, contato direto).</p>
           </div>
 
           {/* FORMA DE PAGAMENTO */}
@@ -719,7 +714,10 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
                     className="p-3 rounded-xl border border-slate-200 hover:border-blue-500 hover:bg-blue-50/20 cursor-pointer flex items-center justify-between transition-all"
                   >
                     <div>
-                      <span className="font-bold text-slate-800 block text-sm">{dev.brand} {dev.model}</span>
+                      <span className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+                        {dev.brand} {dev.model}
+                        <DeviceTypeBadge type={dev.device_type} />
+                      </span>
                       <span className="text-[11px] text-slate-500">
                         {dev.storage_capacity} - {dev.color} | IMEI: {dev.imei} {dev.battery_health ? `| Bat: ${dev.battery_health}%` : ''}
                       </span>

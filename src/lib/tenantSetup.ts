@@ -65,7 +65,8 @@ export const DOCUMENT_TYPES: { type: TenantDocumentType; label: string; required
   { type: 'warranty_term', label: 'Modelo do Termo de Garantia', required: true, description: 'Entregue ao cliente em toda venda de aparelho.' },
   { type: 'service_order', label: 'Modelo da Ordem de Serviço da Assistência', required: true, description: 'Usado na entrada de aparelhos na assistência.' },
   { type: 'upgrade_contract', label: 'Modelo de Contrato de Upgrade', required: false, description: 'Declaração do aparelho recebido na troca.' },
-  { type: 'sale_receipt', label: 'Modelo de Comprovante de Venda', required: false, description: 'Comprovante entregue ao final da venda.' }
+  { type: 'sale_receipt', label: 'Modelo de Comprovante de Venda — Seminovo', required: false, description: 'Comprovante da venda de aparelhos seminovos (e de acessórios).' },
+  { type: 'sale_receipt_sealed', label: 'Modelo de Comprovante de Venda — Lacrado', required: false, description: 'Comprovante da venda de aparelhos novos e lacrados. Os avisos de garantia do fabricante e de cupom não fiscal são incluídos pelo sistema.' }
 ];
 
 export const documentLabel = (type: TenantDocumentType) =>

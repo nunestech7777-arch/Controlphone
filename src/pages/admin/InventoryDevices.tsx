@@ -3,10 +3,12 @@
 // ============================================================================
 
 import React, { useState } from 'react';
-import { Smartphone, Plus, Search, Battery, Eye, Pencil, X, ArrowUp, ArrowDown, ArrowUpDown, Wrench, DollarSign } from 'lucide-react';
+import { Smartphone, Plus, Search, Battery, Eye, Pencil, X, ArrowUp, ArrowDown, ArrowUpDown, Wrench, DollarSign, Trash2, CheckCircle2 } from 'lucide-react';
 import { store, normalizeImei, isValidImei, newUuid, IMEI_HINT } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
-import { Device } from '../../types';
+import { Device, DeviceType } from '../../types';
+import { DeviceTypeBadge, DEVICE_TYPE_LABELS } from '../../components/shared/DeviceTypeBadge';
+import { DeviceRemovalModal } from '../../components/shared/DeviceRemovalModal';
 import { MetricCard } from '../../components/shared/MetricCard';
 import { computeStockMetrics, formatBRL, pendingStockNote } from '../../lib/stockMetrics';
 
@@ -34,6 +36,7 @@ export const InventoryDevices: React.FC = () => {
   const tenantId = currentTenant?.id || 'tenant-itech-01';
 
   const [searchTerm, setSearchTerm] = useState<string>('');
+  const [typeFilter, setTypeFilter] = useState<'all' | DeviceType>('all');
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [daysSort, setDaysSort] = useState<'asc' | 'desc' | null>(null);
   const [editingDeviceId, setEditingDeviceId] = useState<string | null>(null);
@@ -42,6 +45,10 @@ export const InventoryDevices: React.FC = () => {
   const [assistanceDefect, setAssistanceDefect] = useState('');
   const [assistanceNotes, setAssistanceNotes] = useState('');
   const [assistanceError, setAssistanceError] = useState('');
+  const [removalDeviceId, setRemovalDeviceId] = useState<string | null>(null);
+  const [notice, setNotice] = useState('');
+  // Excluir ou inativar: só o administrador da loja (o banco confere de novo)
+  const canRemove = currentUser.role === 'admin' || currentUser.role === 'super_admin';
 
   // Form State
   const [brand, setBrand] = useState('Apple');
@@ -54,6 +61,7 @@ export const InventoryDevices: React.FC = () => {
   const [acquisitionCost, setAcquisitionCost] = useState<string>('');
   const [suggestedPrice, setSuggestedPrice] = useState<string>('');
   const [notes, setNotes] = useState('');
+  const [deviceType, setDeviceType] = useState<DeviceType | ''>('');
 
   // O estoque exibe SOMENTE aparelhos disponíveis para venda
   const allDevices = store.devices.filter(d => d.tenant_id === tenantId);
@@ -62,8 +70,10 @@ export const InventoryDevices: React.FC = () => {
   const stockMetrics = computeStockMetrics(tenantId);
   const detailDevice = devices.find(d => d.id === detailDeviceId);
   const assistanceDevice = devices.find(d => d.id === assistanceDeviceId);
+  const removalDevice = allDevices.find(d => d.id === removalDeviceId);
 
   const filteredDevices = devices.filter(d => {
+    if (typeFilter !== 'all' && d.device_type !== typeFilter) return false;
     const term = searchTerm.toLowerCase();
     return (
       d.model.toLowerCase().includes(term) ||
@@ -95,6 +105,7 @@ export const InventoryDevices: React.FC = () => {
     setAcquisitionCost('');
     setSuggestedPrice('');
     setNotes('');
+    setDeviceType('');
   };
 
   const openCreateModal = () => {
@@ -114,6 +125,7 @@ export const InventoryDevices: React.FC = () => {
     setAcquisitionCost(String(dev.acquisition_cost));
     setSuggestedPrice(String(dev.suggested_price));
     setNotes(dev.physical_condition_notes || '');
+    setDeviceType(dev.device_type || '');
     setEditingDeviceId(dev.id);
     setDetailDeviceId(null);
     setIsModalOpen(true);
@@ -123,6 +135,11 @@ export const InventoryDevices: React.FC = () => {
     e.preventDefault();
     if (!model || !imei || !acquisitionCost || !suggestedPrice) {
       alert('Preencha os campos obrigatórios!');
+      return;
+    }
+    // Obrigatório para aparelho novo no estoque; o aparelho antigo pode continuar sem tipo até ser classificado
+    if (!editingDeviceId && !deviceType) {
+      alert('Informe o tipo do aparelho: Seminovo ou Lacrado.');
       return;
     }
 
@@ -156,6 +173,7 @@ export const InventoryDevices: React.FC = () => {
       storage_capacity: storage,
       color,
       battery_health: parseInt(batteryHealth) || undefined,
+      device_type: deviceType || undefined,
       physical_condition_notes: notes,
       supplier_id: supplierId || undefined,
       acquisition_cost: parseFloat(acquisitionCost),
@@ -163,6 +181,7 @@ export const InventoryDevices: React.FC = () => {
     };
 
     const editing = allDevices.find(d => d.id === editingDeviceId);
+    const previousType = editing?.device_type;
     let saved: Device;
     if (editing) {
       Object.assign(editing, formData);
@@ -203,14 +222,18 @@ export const InventoryDevices: React.FC = () => {
       tenant_id: tenantId,
       user_id: currentUser.id,
       user_role: currentUser.role,
-      action: editing ? 'APARELHO_EDITADO' : 'APARELHO_CADASTRADO',
+      action: !editing ? 'APARELHO_CADASTRADO' : previousType !== saved.device_type ? 'APARELHO_TIPO_ALTERADO' : 'APARELHO_EDITADO',
       module: 'Estoque Aparelhos',
       record_id: saved.id,
       details: {
         imei,
         modelo: `${brand} ${model} ${storage}`,
         custo: parseFloat(acquisitionCost),
-        fornecedor: store.getSupplierName(saved.supplier_id)
+        fornecedor: store.getSupplierName(saved.supplier_id),
+        tipo: saved.device_type ? DEVICE_TYPE_LABELS[saved.device_type] : 'Sem tipo',
+        ...(editing && previousType !== saved.device_type
+          ? { tipo_anterior: previousType ? DEVICE_TYPE_LABELS[previousType] : 'Sem tipo' }
+          : {})
       }
     });
     store.saveToStorage();
@@ -271,6 +294,15 @@ export const InventoryDevices: React.FC = () => {
         </button>
       </div>
 
+      {notice && (
+        <div role="status" className="flex items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-800">
+          <span className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4" />{notice}</span>
+          <button type="button" onClick={() => setNotice('')} className="text-emerald-700 hover:text-emerald-900" aria-label="Fechar aviso">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* VISÃO FINANCEIRA DO ESTOQUE DISPONÍVEL (mesmo card e mesmos cálculos do Dashboard) */}
       <MetricCard
         title="Valor Total do Estoque"
@@ -298,19 +330,37 @@ export const InventoryDevices: React.FC = () => {
           />
         </div>
 
-        <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">
-          {filteredDevices.length} {filteredDevices.length === 1 ? 'aparelho disponível' : 'aparelhos disponíveis'}
-        </span>
+        <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+          <div className="flex items-center gap-1.5 overflow-x-auto" role="group" aria-label="Filtrar por tipo">
+            {([['all', 'Todos'], ['seminovo', 'Seminovos'], ['lacrado', 'Lacrados']] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setTypeFilter(value)}
+                aria-pressed={typeFilter === value}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
+                  typeFilter === value ? 'bg-[#0B0F17] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">
+            {filteredDevices.length} {filteredDevices.length === 1 ? 'aparelho disponível' : 'aparelhos disponíveis'}
+          </span>
+        </div>
       </div>
 
       {/* TABELA DE APARELHOS */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1000px] text-left text-xs text-slate-600">
+          <table className="w-full min-w-[1080px] text-left text-xs text-slate-600">
             <thead className="bg-slate-50 text-slate-400 font-bold uppercase tracking-wider text-[10px] border-b border-slate-200">
               <tr>
                 <th className="py-3.5 px-4 whitespace-nowrap">Aparelho / Modelo</th>
                 <th className="py-3.5 px-4 whitespace-nowrap">IMEI Único</th>
+                <th className="py-3.5 px-4 whitespace-nowrap">Tipo</th>
                 <th className="py-3.5 px-4 whitespace-nowrap">Fornecedor</th>
                 <th className="py-3.5 px-4 whitespace-nowrap">Origem</th>
                 <th className="py-3.5 px-4 whitespace-nowrap text-right">Custo Aquisição</th>
@@ -356,6 +406,9 @@ export const InventoryDevices: React.FC = () => {
                     </td>
                     <td className="py-3.5 px-4 font-mono font-medium text-slate-600 whitespace-nowrap">
                       {dev.imei}
+                    </td>
+                    <td className="py-3.5 px-4">
+                      <DeviceTypeBadge type={dev.device_type} />
                     </td>
                     <td className="py-3.5 px-4">
                       <div
@@ -410,7 +463,7 @@ export const InventoryDevices: React.FC = () => {
               })}
               {filteredDevices.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-400 font-medium">
+                  <td colSpan={10} className="py-8 text-center text-slate-400 font-medium">
                     Nenhum aparelho disponível encontrado.
                   </td>
                 </tr>
@@ -467,6 +520,10 @@ export const InventoryDevices: React.FC = () => {
                   ) : (
                     <span className="text-slate-400">Não informado</span>
                   )}
+                </div>
+                <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+                  <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Tipo</span>
+                  <DeviceTypeBadge type={detailDevice.device_type} />
                 </div>
                 <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
                   <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Origem</span>
@@ -531,6 +588,16 @@ export const InventoryDevices: React.FC = () => {
                 >
                   Fechar
                 </button>
+                {canRemove && (
+                  <button
+                    type="button"
+                    onClick={() => setRemovalDeviceId(detailDevice.id)}
+                    className="px-4 py-2 rounded-xl border border-rose-200 font-semibold text-rose-600 hover:bg-rose-50 flex items-center gap-2 sm:mr-auto"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Excluir Aparelho
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => openAssistanceModal(detailDevice)}
@@ -644,6 +711,31 @@ export const InventoryDevices: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveDevice} className="space-y-4 text-xs">
+              <div>
+                <span className="font-bold text-slate-700 block mb-1">Tipo de Aparelho {editingDeviceId ? '' : '*'}</span>
+                <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Tipo de Aparelho">
+                  {(['seminovo', 'lacrado'] as DeviceType[]).map(value => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="radio"
+                      aria-checked={deviceType === value}
+                      onClick={() => setDeviceType(value)}
+                      className={`px-3 py-2 rounded-xl border font-bold transition-all ${
+                        deviceType === value
+                          ? 'border-blue-500 bg-blue-50 text-blue-700'
+                          : 'border-slate-200 text-slate-600 hover:border-slate-300'
+                      }`}
+                    >
+                      {DEVICE_TYPE_LABELS[value]}
+                    </button>
+                  ))}
+                </div>
+                {editingDeviceId && !deviceType && (
+                  <p className="text-[11px] text-amber-700 mt-1">Aparelho cadastrado antes da classificação: escolha se é seminovo ou lacrado.</p>
+                )}
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">Marca *</label>
@@ -798,6 +890,20 @@ export const InventoryDevices: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+      {removalDevice && (
+        <DeviceRemovalModal
+          device={removalDevice}
+          tenantId={tenantId}
+          userId={currentUser.id}
+          userRole={currentUser.role}
+          onClose={() => setRemovalDeviceId(null)}
+          onDone={(message) => {
+            setRemovalDeviceId(null);
+            setDetailDeviceId(null);
+            setNotice(message);
+          }}
+        />
       )}
     </div>
   );

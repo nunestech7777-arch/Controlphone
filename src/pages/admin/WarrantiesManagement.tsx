@@ -4,11 +4,12 @@
 // ============================================================================
 
 import React, { useState } from 'react';
-import { ShieldCheck, Search, Eye } from 'lucide-react';
+import { ShieldCheck, Search, Eye, FileText } from 'lucide-react';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { consumeIntent } from '../../lib/navIntent';
 import { WarrantyDetailModal } from '../../components/shared/WarrantyDetailModal';
+import { ReceiptTextsModal } from '../../components/shared/ReceiptTextsModal';
 import {
   CDC_NOTICE,
   WARRANTY_STATUS_META,
@@ -28,8 +29,11 @@ const FILTERS: { id: Filter; label: string }[] = [
 ];
 
 export const WarrantiesManagement: React.FC<{ viewId?: string }> = ({ viewId = 'admin-warranties' }) => {
-  const { currentTenant } = useAuth();
+  const { currentTenant, currentUser } = useAuth();
   const tenantId = currentTenant?.id || 'tenant-itech-01';
+  // Textos dos comprovantes: só o administrador da loja edita
+  const canEditTexts = currentUser.role === 'admin' || currentUser.role === 'super_admin';
+  const [textsOpen, setTextsOpen] = useState(false);
 
   const [filter, setFilter] = useState<Filter>('all');
   const [searchTerm, setSearchTerm] = useState('');
@@ -71,14 +75,26 @@ export const WarrantiesManagement: React.FC<{ viewId?: string }> = ({ viewId = '
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div>
-        <h2 className="text-xl font-extrabold text-slate-800 tracking-tight flex items-center gap-2">
-          <ShieldCheck className="w-5 h-5 text-blue-600" />
-          Garantias
-        </h2>
-        <p className="text-xs text-slate-500 font-medium">
-          Garantia comercial individual de cada aparelho vendido. {CDC_NOTICE}
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-xl font-extrabold text-slate-800 tracking-tight flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-blue-600" />
+            Garantias
+          </h2>
+          <p className="text-xs text-slate-500 font-medium">
+            Garantia comercial individual de cada aparelho vendido. {CDC_NOTICE}
+          </p>
+        </div>
+        {canEditTexts && (
+          <button
+            type="button"
+            onClick={() => setTextsOpen(true)}
+            className="shrink-0 text-xs font-bold px-4 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+          >
+            <FileText className="w-4 h-4" />
+            Termos e Documentos
+          </button>
+        )}
       </div>
 
       <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col lg:flex-row items-center justify-between gap-4">
@@ -171,6 +187,9 @@ export const WarrantiesManagement: React.FC<{ viewId?: string }> = ({ viewId = '
       </div>
 
       {detail && <WarrantyDetailModal warranty={detail} onClose={() => setDetailId(null)} />}
+      {textsOpen && (
+        <ReceiptTextsModal tenantId={tenantId} userId={currentUser.id} userRole={currentUser.role} onClose={() => setTextsOpen(false)} />
+      )}
     </div>
   );
 };

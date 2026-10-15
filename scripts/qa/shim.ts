@@ -10,4 +10,5 @@ const ls = {
   clear: () => mem.clear()
 };
 Object.defineProperty(globalThis, 'localStorage', { value: ls, configurable: true });
-Object.defineProperty(globalThis, 'window', { value: { alert: () => {}, addEventListener: () => {}, removeEventListener: () => {}, localStorage: ls }, configurable: true });
+// atob/btoa: o gerador de PDF (jsPDF) usa os do window quando ele existe
+Object.defineProperty(globalThis, 'window', { value: { alert: () => {}, addEventListener: () => {}, removeEventListener: () => {}, localStorage: ls, atob: globalThis.atob, btoa: globalThis.btoa }, configurable: true });
