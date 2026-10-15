@@ -16,6 +16,7 @@ Testes que exercitam o motor de dados do app (`src/lib/store.ts`) fora do navega
 | `banco-tipo-aparelho.ts` | Seminovo x lacrado: tipo no banco, comprovante escolhido automaticamente (com os avisos do lacrado), venda mista, preservação do documento, textos da loja, permissões e isolamento | Sim |
 | `banco-exclusao-aparelho.ts` | Exclusão e inativação de aparelhos: estoque e compra do fornecedor corrigidos na mesma transação, bloqueios por vínculo, falha sem alteração parcial, permissões e histórico | Sim |
 | `banco-origens.ts` | Origem do cliente e da venda (orgânico x anúncio pago): gravação no banco e relatório separado por origem | Sim |
+| `banco-editar-acessorio.ts` | Edição de acessório e brinde (quantidade, custo, preço e fornecedor) e correção da compra no fornecedor | Sim |
 | `desempenho-fila.ts` | Tempo de uma gravação com muito histórico (5.000 vendas, 20.000 movimentações) | Não |
 
 ## Rodar
@@ -34,6 +35,7 @@ sh scripts/qa/rodar.sh banco-operacional
 sh scripts/qa/rodar.sh banco-tipo-aparelho
 sh scripts/qa/rodar.sh banco-exclusao-aparelho
 sh scripts/qa/rodar.sh banco-origens
+sh scripts/qa/rodar.sh banco-editar-acessorio
 node scripts/qa/banco-regras-de-acesso.mjs "$QA_SELLER_EMAIL"
 ```
 

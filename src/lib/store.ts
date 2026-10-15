@@ -1352,6 +1352,66 @@ class ControlphoneStore {
     });
   }
 
+  /**
+   * Corrige um acessório ou brinde já cadastrado (ex.: digitou 40 unidades e eram 45).
+   * Histórico de compras do fornecedor: se o item tem só a compra do cadastro, ela é corrigida junto
+   * (quantidade, custo e fornecedor); com reposições registradas, o histórico não é mexido.
+   */
+  updateStockItem(p: {
+    tenantId: string; userId: string; userRole: string; kind: 'accessory' | 'gift'; itemId: string;
+    data: { name: string; category: string; quantity: number; unitCost: number; salePrice?: number; supplierId?: string };
+  }): OpResult {
+    if (!this.isManager(p.userRole)) return opFail('Somente administradores podem editar o estoque.');
+    const name = p.data.name.trim();
+    const category = p.data.category.trim();
+    if (!name || !category) return opFail('Informe o nome e a categoria.');
+    if (!Number.isInteger(p.data.quantity) || p.data.quantity < 0) return opFail('Informe uma quantidade válida (número inteiro, zero ou mais).');
+    if (!(p.data.unitCost >= 0)) return opFail('Informe um custo unitário válido.');
+    if (p.kind === 'accessory' && !(Number(p.data.salePrice) >= 0)) return opFail('Informe um preço de venda válido.');
+
+    const list = (p.kind === 'accessory' ? this.accessories : this.gifts) as (Accessory | Gift)[];
+    const item = list.find(i => i.id === p.itemId && i.tenant_id === p.tenantId);
+    if (!item) return opFail('Item não encontrado.');
+    const before = { nome: item.name, quantidade: item.quantity, custo: Number(item.unit_cost), fornecedor: this.getSupplierName(item.supplier_id) };
+
+    item.name = name;
+    item.category = category;
+    item.quantity = p.data.quantity;
+    item.unit_cost = Math.round(p.data.unitCost * 100) / 100;
+    if (p.kind === 'accessory') (item as Accessory).sale_price = Math.round(Number(p.data.salePrice) * 100) / 100;
+    item.supplier_id = p.data.supplierId || undefined;
+
+    const purchases = this.supplierPurchases.filter(x => x.item_type === p.kind && x.item_id === item.id);
+    if (purchases.length === 1) {
+      const purchase = purchases[0];
+      if (!item.supplier_id) {
+        this.supplierPurchases = this.supplierPurchases.filter(x => x.id !== purchase.id);
+      } else {
+        Object.assign(purchase, {
+          supplier_id: item.supplier_id, description: name, quantity: item.quantity,
+          unit_cost: item.unit_cost, total_cost: Math.round(item.unit_cost * item.quantity * 100) / 100
+        });
+      }
+    } else if (purchases.length === 0 && item.supplier_id) {
+      this.recordSupplierPurchase({
+        tenant_id: p.tenantId, supplier_id: item.supplier_id, item_type: p.kind, item_id: item.id,
+        description: name, quantity: item.quantity, unit_cost: item.unit_cost, purchased_at: item.created_at
+      });
+    }
+
+    this.addAuditLog({
+      tenant_id: p.tenantId, user_id: p.userId, user_role: p.userRole,
+      action: p.kind === 'accessory' ? 'ACESSORIO_EDITADO' : 'BRINDE_EDITADO',
+      module: 'Estoque Acessórios', record_id: item.id,
+      details: {
+        antes: before,
+        depois: { nome: name, quantidade: item.quantity, custo: item.unit_cost, fornecedor: this.getSupplierName(item.supplier_id) }
+      }
+    });
+    this.saveToStorage();
+    return { ok: true };
+  }
+
   // Aparelho tem compra única: recria o registro quando fornecedor, custo ou dados mudam
   syncDevicePurchase(device: Device) {
     this.supplierPurchases = this.supplierPurchases.filter(

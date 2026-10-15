@@ -3,7 +3,7 @@
 // ============================================================================
 
 import React, { useState } from 'react';
-import { Package, Gift as GiftIcon, Plus, Search, X } from 'lucide-react';
+import { Package, Gift as GiftIcon, Plus, Search, X, Pencil } from 'lucide-react';
 import { store, newUuid } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Accessory, Gift } from '../../types';
@@ -25,13 +25,65 @@ export const InventoryAccessories: React.FC = () => {
   const [unitCost, setUnitCost] = useState('');
   const [salePrice, setSalePrice] = useState('');
   const [supplierId, setSupplierId] = useState('');
+  // Item aberto para edição (null = cadastro novo)
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formError, setFormError] = useState('');
 
   const accessories = store.accessories.filter(a => a.tenant_id === tenantId);
   const gifts = store.gifts.filter(g => g.tenant_id === tenantId);
   const suppliers = store.suppliers.filter(s => s.tenant_id === tenantId);
 
-  const handleCreateItem = (e: React.FormEvent) => {
+  const resetForm = () => {
+    setName('');
+    setCategory('');
+    setQuantity('10');
+    setUnitCost('');
+    setSalePrice('');
+    setSupplierId('');
+    setEditingId(null);
+    setFormError('');
+  };
+
+  const openCreate = () => {
+    resetForm();
+    setIsModalOpen(true);
+  };
+
+  const openEdit = (item: Accessory | Gift) => {
+    setEditingId(item.id);
+    setName(item.name);
+    setCategory(item.category);
+    setQuantity(String(item.quantity));
+    setUnitCost(String(item.unit_cost));
+    setSalePrice('sale_price' in item ? String(item.sale_price) : '');
+    setSupplierId(item.supplier_id || '');
+    setFormError('');
+    setIsModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setIsModalOpen(false);
+    resetForm();
+  };
+
+  const handleSaveItem = (e: React.FormEvent) => {
     e.preventDefault();
+    if (editingId) {
+      const result = store.updateStockItem({
+        tenantId, userId: currentUser.id, userRole: currentUser.role,
+        kind: tab === 'accessories' ? 'accessory' : 'gift', itemId: editingId,
+        data: {
+          name, category, quantity: Number(quantity), unitCost: parseFloat(unitCost),
+          salePrice: tab === 'accessories' ? parseFloat(salePrice) : undefined, supplierId: supplierId || undefined
+        }
+      });
+      if (!result.ok) {
+        setFormError(result.error || 'Não foi possível salvar as alterações.');
+        return;
+      }
+      closeModal();
+      return;
+    }
     if (!name || !category || !unitCost) return;
 
     let itemId: string;
@@ -88,13 +140,7 @@ export const InventoryAccessories: React.FC = () => {
     });
 
     store.saveToStorage();
-    setIsModalOpen(false);
-    setName('');
-    setCategory('');
-    setQuantity('10');
-    setUnitCost('');
-    setSalePrice('');
-    setSupplierId('');
+    closeModal();
   };
 
   return (
@@ -111,7 +157,7 @@ export const InventoryAccessories: React.FC = () => {
         </div>
 
         <button
-          onClick={() => setIsModalOpen(true)}
+          onClick={openCreate}
           className="btn-tenant-primary text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all active:scale-95"
         >
           <Plus className="w-4 h-4" />
@@ -174,6 +220,7 @@ export const InventoryAccessories: React.FC = () => {
                 <th className="py-3.5 px-4">Custo Unitário (Loja)</th>
                 {tab === 'accessories' && <th className="py-3.5 px-4">Preço de Venda</th>}
                 {tab === 'gifts' && <th className="py-3.5 px-4">Valor Cobrado ao Cliente</th>}
+                <th className="py-3.5 pl-2 pr-4 w-10"><span className="sr-only">Editar</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -181,7 +228,7 @@ export const InventoryAccessories: React.FC = () => {
                 accessories
                   .filter(a => a.name.toLowerCase().includes(searchTerm.toLowerCase()))
                   .map((acc) => (
-                    <tr key={acc.id} className="hover:bg-slate-50/80 transition-colors">
+                    <tr key={acc.id} onClick={() => openEdit(acc)} className="hover:bg-slate-50/80 transition-colors cursor-pointer">
                       <td className="py-3.5 px-4 font-bold text-slate-800">{acc.name}</td>
                       <td className="py-3.5 px-4 text-slate-600">{acc.category}</td>
                       <td className={`py-3.5 px-4 ${acc.supplier_id ? 'font-medium text-slate-700' : 'text-slate-400'}`}>
@@ -200,6 +247,17 @@ export const InventoryAccessories: React.FC = () => {
                       <td className="py-3.5 px-4 font-black text-blue-600">
                         {formatBRL(Number(acc.sale_price))}
                       </td>
+                      <td className="py-3.5 pl-2 pr-4 text-right">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); openEdit(acc); }}
+                          title="Editar acessório"
+                          aria-label="Editar acessório"
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))}
 
@@ -207,7 +265,7 @@ export const InventoryAccessories: React.FC = () => {
                 gifts
                   .filter(g => g.name.toLowerCase().includes(searchTerm.toLowerCase()))
                   .map((gift) => (
-                    <tr key={gift.id} className="hover:bg-purple-50/20 transition-colors">
+                    <tr key={gift.id} onClick={() => openEdit(gift)} className="hover:bg-purple-50/20 transition-colors cursor-pointer">
                       <td className="py-3.5 px-4 font-bold text-purple-900 flex items-center gap-2">
                         <GiftIcon className="w-3.5 h-3.5 text-purple-600" />
                         {gift.name}
@@ -227,6 +285,17 @@ export const InventoryAccessories: React.FC = () => {
                       <td className="py-3.5 px-4 font-black text-emerald-600">
                         R$ 0,00 (Gratuito)
                       </td>
+                      <td className="py-3.5 pl-2 pr-4 text-right">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); openEdit(gift); }}
+                          title="Editar brinde"
+                          aria-label="Editar brinde"
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))}
             </tbody>
@@ -240,14 +309,16 @@ export const InventoryAccessories: React.FC = () => {
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl animate-fade-in max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
               <h3 className="text-sm font-extrabold text-slate-800">
-                {tab === 'accessories' ? 'Cadastrar Novo Acessório' : 'Cadastrar Novo Brinde'}
+                {editingId
+                  ? (tab === 'accessories' ? 'Editar Acessório' : 'Editar Brinde')
+                  : (tab === 'accessories' ? 'Cadastrar Novo Acessório' : 'Cadastrar Novo Brinde')}
               </h3>
-              <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-700">
+              <button onClick={closeModal} className="text-slate-400 hover:text-slate-700" aria-label="Fechar">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateItem} className="space-y-4 text-xs">
+            <form onSubmit={handleSaveItem} className="space-y-4 text-xs">
               <div>
                 <label className="font-bold text-slate-700 block mb-1">Nome do Item *</label>
                 <input
@@ -273,9 +344,11 @@ export const InventoryAccessories: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Quantidade Inicial *</label>
+                  <label className="font-bold text-slate-700 block mb-1">{editingId ? 'Quantidade em Estoque *' : 'Quantidade Inicial *'}</label>
                   <input
                     type="number"
+                    min="0"
+                    step="1"
                     value={quantity}
                     onChange={(e) => setQuantity(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 font-bold"
@@ -334,10 +407,17 @@ export const InventoryAccessories: React.FC = () => {
                 )}
               </div>
 
+              {editingId && (
+                <p className="text-[11px] text-slate-500">
+                  Use para corrigir um cadastro. Vendas já feitas não mudam; a quantidade informada passa a ser o estoque atual.
+                </p>
+              )}
+              {formError && <p role="alert" className="text-xs font-semibold text-rose-600">{formError}</p>}
+
               <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
+                  onClick={closeModal}
                   className="px-4 py-2 font-semibold text-slate-600 hover:bg-slate-100 rounded-xl"
                 >
                   Cancelar
@@ -346,7 +426,7 @@ export const InventoryAccessories: React.FC = () => {
                   type="submit"
                   className="btn-tenant-primary px-5 py-2 font-bold rounded-xl"
                 >
-                  Salvar
+                  {editingId ? 'Salvar Alterações' : 'Salvar'}
                 </button>
               </div>
             </form>

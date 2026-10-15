@@ -21,7 +21,9 @@ const ACTION_LABELS: Record<string, string> = {
   APARELHO_INATIVADO: 'Inativou um aparelho.',
   APARELHO_TIPO_ALTERADO: 'Alterou o tipo de um aparelho (seminovo ou lacrado).',
   ACESSORIO_CADASTRADO: 'Cadastrou um acessório.',
+  ACESSORIO_EDITADO: 'Alterou um acessório.',
   BRINDE_CADASTRADO: 'Cadastrou um brinde.',
+  BRINDE_EDITADO: 'Alterou um brinde.',
   // Clientes e fornecedores
   CLIENTE_CADASTRADO: 'Cadastrou um cliente.',
   CLIENTE_EDITADO: 'Alterou um cliente.',
