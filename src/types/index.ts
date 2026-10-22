@@ -10,6 +10,9 @@ export type TenantPlan = 'starter' | 'professional' | 'enterprise';
 export type DeviceStatus = 'available' | 'reserved' | 'in_maintenance' | 'sold' | 'decommissioned' | 'awaiting_evaluation';
 export type DeviceOrigin = 'purchase' | 'trade_in' | 'internal_transfer';
 export type SaleStatus = 'completed' | 'cancelled';
+/** in_store: nunca saiu da loja · with_customer: entregue ao cliente · awaiting_evaluation: voltou e precisa de avaliação */
+export type SaleDeletionDeviceSituation = 'in_store' | 'with_customer' | 'awaiting_evaluation';
+export type SaleRefundStatus = 'pending' | 'partial' | 'done' | 'not_needed';
 export type PaymentMethod = 'cash' | 'pix' | 'credit_card' | 'debit_card' | 'trade_in_credit' | 'store_credit' | 'other';
 export type OSStatus = 
   | 'waiting_diagnosis'
@@ -166,6 +169,19 @@ export interface SupplierPurchase {
 // Tipo comercial do aparelho: define o comprovante e os termos usados na venda
 export type DeviceType = 'seminovo' | 'lacrado';
 
+// Vistoria do aparelho seminovo feita pelo vendedor na venda (lib/deviceInspection)
+export type InspectionKey =
+  | 'front_camera' | 'rear_camera' | 'screen' | 'top_speaker' | 'bottom_speaker' | 'microphone' | 'audio_output';
+
+export interface DeviceInspection {
+  /** true = SIM (em perfeito funcionamento) | false = NÃO */
+  answers: Record<InspectionKey, boolean>;
+  notes?: string;
+  imei: string;
+  inspected_by: string; // vendedor
+  inspected_at: string;
+}
+
 export interface Device {
   id: string;
   tenant_id: string;
@@ -234,6 +250,8 @@ export interface SaleItem {
   device_type?: DeviceType;
   /** Identificação do aparelho no momento da venda (o comprovante não muda se o cadastro for editado depois) */
   device_info?: { brand: string; model: string; storage_capacity: string; color: string; imei: string };
+  /** Vistoria preenchida na venda (somente aparelho seminovo) */
+  inspection?: DeviceInspection;
   returned_at?: string; // Item trocado/devolvido: deixa de contar em vendas, ranking e receita
   return_request_id?: string;
   return_type?: ReturnResolution;
@@ -258,8 +276,11 @@ export interface SalePayment {
   id: string;
   sale_id: string;
   payment_method: PaymentMethod;
+  /** Valor cobrado nesta forma de pagamento (no crédito, já inclui os juros) */
   amount: number;
   installments: number;
+  /** Juros da maquininha cobrados do cliente neste pagamento (somente cartão de crédito) */
+  interest?: number;
   received_at: string;
 }
 
@@ -270,6 +291,24 @@ export interface SaleGift {
   quantity: number;
   unit_cost: number;
   gift?: Gift;
+}
+
+/**
+ * Registro do Termo de Garantia Apple apresentado na venda. A versão gravada aqui escolhe o texto do
+ * PDF para sempre (lib/appleWarranty guarda todas as versões). A ciência é só de que o documento foi
+ * apresentado ao cliente; não é renúncia a nenhum direito legal.
+ */
+export interface SaleAppleWarranty {
+  term_id: string;
+  version: string;
+  title: string;
+  /** Documento em que o termo vai anexado (comprovante de lacrado) */
+  document: string;
+  sale_item_ids: string[];
+  presented_at: string;
+  presented_by: string;
+  acknowledged_at?: string;
+  acknowledged_by?: string;
 }
 
 export interface Sale {
@@ -289,6 +328,35 @@ export interface Sale {
   cancellation_reason?: string;
   cancelled_by?: string;
   cancelled_at?: string;
+  /**
+   * EXCLUSÃO LÓGICA (botão "Excluir Venda"): a venda fica gravada para auditoria, sai da listagem
+   * normal e não conta em faturamento, juros, lucro, ranking e metas (status segue 'cancelled').
+   */
+  deleted_at?: string;
+  deleted_by?: string;
+  deletion_reason?: string;
+  /** Onde estava o aparelho na hora da exclusão */
+  deletion_device_situation?: SaleDeletionDeviceSituation;
+  /** Aparelho com o cliente: continua fora do estoque até a conferência do retorno físico */
+  deletion_return_pending?: boolean;
+  deletion_return_confirmed_at?: string;
+  deletion_return_confirmed_by?: string;
+  /** Estorno do dinheiro: a exclusão no sistema não devolve o pagamento sozinha */
+  refund_status?: SaleRefundStatus;
+  refund_amount?: number;
+  refund_note?: string;
+  refund_updated_at?: string;
+  refund_updated_by?: string;
+  /**
+   * LIXEIRA (só vendas canceladas): sai do histórico principal, pode ser restaurada (continua cancelada)
+   * ou excluída definitivamente da interface. Nada é apagado do banco; o número nunca é reutilizado.
+   */
+  /** Termo de Garantia Apple (1 ano) apresentado na venda de aparelho Apple lacrado */
+  apple_warranty?: SaleAppleWarranty;
+  trashed_at?: string;
+  trashed_by?: string;
+  purged_at?: string;
+  purged_by?: string;
   created_at: string;
   customer?: Customer;
   seller?: UserProfile;
@@ -296,6 +364,11 @@ export interface Sale {
   payments?: SalePayment[];
   gifts?: SaleGift[];
   adjustments?: SaleAdjustment[];
+  /**
+   * Juros da maquininha cobrados do cliente no cartão de crédito. Fazem parte do faturamento
+   * (total_amount + card_interest), mas não do lucro: total_amount e gross_profit são só dos produtos.
+   */
+  card_interest?: number;
   /** Observações do comprovante de lacrado vigentes no momento da venda (definidas pelo administrador) */
   sealed_receipt_notes?: string;
   /** Versão dos modelos de comprovante usados nesta venda */
@@ -477,6 +550,8 @@ export interface Warranty {
   cancel_reason?: string;
   replaces_warranty_id?: string; // garantia do aparelho original (em caso de troca)
   replaced_by_warranty_id?: string;
+  /** Cópia da vistoria da venda (seminovo): consultada em Garantias e na Assistência pelo IMEI */
+  inspection?: DeviceInspection;
   history: RecordEvent[];
   created_at: string;
 }

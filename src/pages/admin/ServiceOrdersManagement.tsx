@@ -18,6 +18,7 @@ import { IntakeChecklist } from '../../lib/assistanceChecklist';
 import { getServiceOrderDocument } from '../../lib/pdf/assistanceDocuments';
 import { downloadBuiltDocument } from '../../lib/pdf/documentActions';
 import { WARRANTY_STATUS_META, formatDay as formatWarrantyDay, getWarrantyStatus } from '../../lib/warrantyStatus';
+import { InspectionSummary } from '../../components/shared/InspectionSummary';
 
 type OriginTab = 'internal' | 'external';
 type ActionKind = 'complete' | 'deliver' | 'cancel' | 'reject';
@@ -664,6 +665,7 @@ export const ServiceOrdersManagement: React.FC = () => {
                   <p className="text-slate-600">
                     Compra em {formatWarrantyDay(detailWarranty.sale_date)} | Prazo de {detailWarranty.warranty_days} dias | Vencimento em {formatWarrantyDay(detailWarranty.end_date)}
                   </p>
+                  {detailWarranty.inspection && <InspectionSummary inspection={detailWarranty.inspection} />}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <select
                       value={analysisResult}

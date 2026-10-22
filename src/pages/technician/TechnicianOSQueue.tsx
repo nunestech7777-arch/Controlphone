@@ -9,6 +9,7 @@ import { useAuth } from '../../context/AuthContext';
 import { ServiceOrder } from '../../types';
 import { OS_STATUS_LABELS } from '../../lib/labels';
 import { formatBRL } from '../../lib/labels';
+import { InspectionSummary } from '../../components/shared/InspectionSummary';
 
 export const TechnicianOSQueue: React.FC = () => {
   const { currentTenant, currentUser } = useAuth();
@@ -199,6 +200,11 @@ export const TechnicianOSQueue: React.FC = () => {
               <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100">
                 <span className="font-bold text-slate-700 block">Aparelho: {diagnosisModalOS.device_brand} {diagnosisModalOS.device_model}</span>
                 <span className="text-slate-500">Defeito Relatado: {diagnosisModalOS.reported_defect}</span>
+                {(() => {
+                  // vistoria feita na venda do seminovo, quando a OS reconheceu a garantia pelo IMEI
+                  const inspection = store.warranties.find(w => w.id === diagnosisModalOS.warranty_id)?.inspection;
+                  return inspection ? <div className="mt-2"><InspectionSummary inspection={inspection} /></div> : null;
+                })()}
               </div>
 
               <div>

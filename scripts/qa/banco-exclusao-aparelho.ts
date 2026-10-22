@@ -13,6 +13,7 @@ import { loadRemovalCheck, removeDevice, deactivateDevice } from '../../src/lib/
 import { deleteDeviceOnServer } from '../../src/lib/realSync';
 import { activityModule, activityText } from '../../src/lib/activityLabels';
 import { apagarDocumentosDoTeste, avisoHistorico } from './limpeza';
+import { vistoriaCompleta } from './vistoria';
 import { Device, UserRole } from '../../src/types';
 
 let pass = 0, failN = 0;
@@ -93,7 +94,7 @@ check('T4: nenhuma despesa criada ou apagada pelas exclusões', (await dbExpense
 
 // ---- TESTE 5 e 7: aparelho vendido (com pagamento real) é bloqueado
 const sale = store.finalizeSale({ tenantId: T, sellerId: ADMIN_ID, customerId: cust.id, salesOrigin: 'Outro', subtotal: 0, discountAmount: 0, totalAmount: 0, totalCost: 0,
-  items: [{ itemType: 'device', deviceId: devC.id, quantity: 1, unitCost: 0, unitPrice: 3000, discount: 0, totalPrice: 0 }], payments: [{ paymentMethod: 'pix', amount: 3000, installments: 1 }], gifts: [] });
+  items: [{ itemType: 'device', deviceId: devC.id, quantity: 1, unitCost: 0, unitPrice: 3000, discount: 0, totalPrice: 0, inspection: vistoriaCompleta() }], payments: [{ paymentMethod: 'pix', amount: 3000, installments: 1 }], gifts: [] });
 await flush();
 let blockedCheck = await loadRemovalCheck(devC.id);
 result = await remove(devC.id);
@@ -103,7 +104,7 @@ check('T5/T7: aparelho vendido com pagamento: exclusão bloqueada e o motivo apa
 check('T5: venda e pagamento preservados', Boolean((await supabase.from('tenant_records').select('id').eq('tenant_id', T).eq('kind', 'sales').eq('id', sale.id).maybeSingle()).data) && !('error' in blockedCheck) && !blockedCheck.canDeactivate);
 
 // ---- TESTE 6: aparelho do upgrade é bloqueado e pode ser inativado
-const trade = store.processTradeIn({ tenantId: T, customerId: cust.id, sellerId: ADMIN_ID, soldDeviceId: devD.id, soldDevicePrice: 3000, receivedImei: imei(8), receivedBrand: 'Apple', receivedModel: `${TAG} iPhone recebido`, receivedStorage: '64GB', receivedColor: 'Branco', appraisalValue: 1000, paymentMethod: 'pix', salesOrigin: 'Outro' });
+const trade = store.processTradeIn({ tenantId: T, customerId: cust.id, sellerId: ADMIN_ID, soldDeviceId: devD.id, soldDevicePrice: 3000, receivedImei: imei(8), receivedBrand: 'Apple', receivedModel: `${TAG} iPhone recebido`, receivedStorage: '64GB', receivedColor: 'Branco', appraisalValue: 1000, paymentMethod: 'pix', salesOrigin: 'Outro', soldDeviceInspection: vistoriaCompleta() });
 created.push(trade.received_device_id);
 await flush();
 result = await remove(trade.received_device_id);

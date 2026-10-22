@@ -5,7 +5,7 @@
 // ============================================================================
 
 import React, { useState } from 'react';
-import { ShoppingBag, X, FileText, Ban, ExternalLink } from 'lucide-react';
+import { ShoppingBag, X, FileText, ExternalLink, Trash2 } from 'lucide-react';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Sale, DeviceStatus } from '../../types';
@@ -13,14 +13,16 @@ import { SaleDocumentsMenu } from './SaleDocumentsMenu';
 import { SALE_DOCUMENTS, getSaleContext, runDocumentAction } from '../../lib/pdf/saleDocuments';
 import { navigateTo } from '../../lib/navIntent';
 import { CDC_NOTICE, WARRANTY_STATUS_META, formatDay, getDaysRemaining, getWarrantyStatus } from '../../lib/warrantyStatus';
+import { InspectionSummary } from './InspectionSummary';
+import { saleInterest, saleRevenue } from '../../lib/saleFinance';
 
 type DetailTab = 'overview' | 'products' | 'payments' | 'upgrade' | 'warranty' | 'history';
 
 interface SaleDetailModalProps {
   sale: Sale;
   onClose: () => void;
-  /** Fornecido pela tela de Vendas (administrador) para abrir o fluxo de cancelamento */
-  onCancel?: () => void;
+  /** Fornecido pela tela de Vendas (administrador) para abrir o fluxo de exclusão */
+  onDelete?: () => void;
 }
 
 const PAYMENT_LABELS: Record<string, string> = {
@@ -55,7 +57,7 @@ const customerSince = (iso: string) => {
   const y = Math.floor(days / 365); return `${y} ${y === 1 ? 'ano' : 'anos'}`;
 };
 
-export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose, onCancel }) => {
+export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose, onDelete }) => {
   const { currentUser, currentTenant, currentTheme, isSupportMode } = useAuth();
   const isAdmin = currentUser.role === 'admin' || isSupportMode;
   const [tab, setTab] = useState<DetailTab>('overview');
@@ -92,18 +94,21 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
   const upgradeReceived = tradeIn ? deviceOf(tradeIn.received_device_id) : undefined;
 
   // --- valores ---
+  // valor dos produtos x juros da maquininha x faturamento (lib/saleFinance): o lucro é só dos produtos
   const totalAmount = Number(sale.total_amount);
+  const interest = saleInterest(sale);
+  const revenue = saleRevenue(sale);
   const costTotal = Number(sale.total_cost);
   const profit = totalAmount - costTotal;
   const margin = totalAmount > 0 ? (profit / totalAmount) * 100 : 0;
 
   const payments = sale.payments || [];
   const paymentsSum = payments.reduce((a, p) => a + Number(p.amount), 0);
-  const change = Math.max(0, Math.round((paymentsSum - totalAmount) * 100) / 100);
+  const change = Math.max(0, Math.round((paymentsSum - revenue) * 100) / 100);
 
   // --- cliente ---
   const customerSales = store.sales.filter(s => s.tenant_id === tenantId && s.customer_id === record.customer_id && s.status === 'completed');
-  const customerTotal = customerSales.reduce((a, s) => a + Number(s.total_amount), 0);
+  const customerTotal = customerSales.reduce((a, s) => a + saleRevenue(s), 0);
 
   // --- garantia ---
   const warranties = store.warranties
@@ -116,6 +121,14 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
   const userName = (id?: string) => store.profiles.find(p => p.id === id)?.full_name;
   if (sale) {
     events.push({ at: sale.created_at, text: `Venda #${sale.sale_number} criada`, user: seller?.full_name });
+    if (sale.apple_warranty) {
+      events.push({
+        at: sale.apple_warranty.presented_at,
+        text: `Termo de Garantia Apple (1 ano) apresentado — versão ${sale.apple_warranty.version}`,
+        user: userName(sale.apple_warranty.presented_by),
+        note: sale.apple_warranty.acknowledged_at ? 'Ciência do cliente registrada' : undefined
+      });
+    }
     if (payments.length > 0) {
       events.push({
         at: payments[0].received_at || sale.created_at,
@@ -186,7 +199,7 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
   ];
 
   const statusBadge = cancelled ? (
-    <span className="inline-block whitespace-nowrap px-2.5 py-1 rounded-full text-[11px] font-semibold border bg-rose-50 text-rose-700 border-rose-200">Cancelada</span>
+    <span className="inline-block whitespace-nowrap px-2.5 py-1 rounded-full text-[11px] font-semibold border bg-rose-50 text-rose-700 border-rose-200">{sale.deleted_at ? 'Excluída' : 'Cancelada'}</span>
   ) : (
     <span className="inline-block whitespace-nowrap px-2.5 py-1 rounded-full text-[11px] font-semibold border bg-emerald-50 text-emerald-700 border-emerald-200">Concluída</span>
   );
@@ -239,10 +252,16 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
                 <div className={boxCls}><span className={labelCls}>Nº da Venda</span><span className="font-mono font-bold text-slate-800">#{sale.sale_number}</span></div>
                 <div className={boxCls}><span className={labelCls}>Data e Horário</span><span className="font-semibold text-slate-800">{dateTime(createdAt)}</span></div>
                 <div className={boxCls}><span className={labelCls}>Tipo</span><span className="font-semibold text-slate-800">{isUpgrade ? 'Upgrade (aparelho recebido na troca)' : 'Venda normal'}</span></div>
-                <div className={boxCls}><span className={labelCls}>Status</span><span className="font-semibold text-slate-800">{cancelled ? 'Cancelada' : 'Concluída'}</span></div>
+                <div className={boxCls}><span className={labelCls}>Status</span><span className="font-semibold text-slate-800">{cancelled ? (sale.deleted_at ? 'Excluída' : 'Cancelada') : 'Concluída'}</span></div>
                 <div className={boxCls}><span className={labelCls}>Vendedor Responsável</span><span className="font-semibold text-slate-800">{seller?.full_name || '—'}</span></div>
                 <div className={boxCls}><span className={labelCls}>Origem da Venda</span><span className="font-semibold text-slate-800">{sale.sales_origin || 'Não informada'}</span></div>
-                <div className={boxCls}><span className={labelCls}>Total</span><span className="font-black text-slate-900">{brl(totalAmount)}</span></div>
+                {interest > 0 && (
+                  <>
+                    <div className={boxCls}><span className={labelCls}>Valor dos Produtos</span><span className="font-semibold text-slate-800">{brl(totalAmount)}</span></div>
+                    <div className={boxCls}><span className={labelCls}>Juros da Maquininha</span><span className="font-semibold text-slate-800">{brl(interest)}</span></div>
+                  </>
+                )}
+                <div className={boxCls}><span className={labelCls}>{interest > 0 ? 'Faturamento' : 'Total'}</span><span className="font-black text-slate-900">{brl(revenue)}</span></div>
                 <div className={boxCls}>
                   <span className={labelCls}>Pagamento</span>
                   <span className="font-semibold text-slate-800">
@@ -253,8 +272,11 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
 
               {cancelled && (
                 <div className="rounded-xl p-3 border border-rose-200 bg-rose-50 text-rose-700">
-                  <span className="font-bold">Venda cancelada em {dateTime(sale.cancelled_at)}</span>
+                  <span className="font-bold">Venda {sale.deleted_at ? 'excluída' : 'cancelada'} em {dateTime(sale.cancelled_at)}</span>
                   {sale.cancellation_reason && <span className="block">Motivo: {sale.cancellation_reason}</span>}
+                  {sale.deleted_at && sale.deletion_return_pending && (
+                    <span className="block font-semibold">Aparelho ainda com o cliente: confirme o retorno físico em Vendas Excluídas.</span>
+                  )}
                 </div>
               )}
 
@@ -293,8 +315,12 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
                 <div className="rounded-xl border border-slate-200 p-4">
                   <span className={labelCls}>Resumo Financeiro Interno (restrito ao administrador)</span>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-1">
-                    <div className={boxCls}><span className={labelCls}>Custo de Aquisição</span><span className="font-semibold text-slate-800">{brl(costTotal)}</span></div>
-                    <div className={boxCls}><span className={labelCls}>Lucro</span><span className="font-bold text-emerald-600">{cancelled ? '—' : brl(profit)}</span></div>
+                    <div className={boxCls}><span className={labelCls}>Custo Acumulado</span><span className="font-semibold text-slate-800">{brl(costTotal)}</span></div>
+                    <div className={boxCls}>
+                      <span className={labelCls}>Lucro Bruto</span>
+                      <span className="font-bold text-emerald-600">{cancelled ? '—' : brl(profit)}</span>
+                      {interest > 0 && <span className="block text-[10px] text-slate-400">Sem os juros da maquininha</span>}
+                    </div>
                     <div className={boxCls}><span className={labelCls}>Margem</span><span className="font-semibold text-slate-800">{cancelled ? '—' : `${margin.toFixed(1)}%`}</span></div>
                   </div>
                 </div>
@@ -349,6 +375,14 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
                 </div>
               </div>
 
+              {deviceItems.filter(it => it.inspection).map(it => (
+                <InspectionSummary
+                  key={`vistoria-${it.id}`}
+                  inspection={it.inspection!}
+                  title={`Vistoria do aparelho ${deviceOf(it.device_id) ? `${deviceOf(it.device_id)!.brand} ${deviceOf(it.device_id)!.model}` : ''}`.trim()}
+                />
+              ))}
+
               {accessoryItems.length > 0 && (
                 <div>
                   <span className={`${labelCls} mb-2`}>Acessórios</span>
@@ -387,7 +421,13 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
                 <div className="flex flex-col items-end gap-0.5 text-slate-600">
                   <span>Subtotal: <b className="text-slate-800">{brl(sale.subtotal)}</b></span>
                   {Number(sale.discount_amount) > 0 && <span>Descontos: <b className="text-rose-600">- {brl(sale.discount_amount)}</b></span>}
-                  <span className="text-sm">Total: <b className="text-slate-900">{brl(sale.total_amount)}</b></span>
+                  {interest > 0 && (
+                    <>
+                      <span>Valor dos produtos: <b className="text-slate-800">{brl(sale.total_amount)}</b></span>
+                      <span>Juros da maquininha: <b className="text-slate-800">{brl(interest)}</b></span>
+                    </>
+                  )}
+                  <span className="text-sm">{interest > 0 ? 'Faturamento' : 'Total'}: <b className="text-slate-900">{brl(revenue)}</b></span>
                 </div>
               )}
             </>
@@ -396,7 +436,7 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
           {tab === 'payments' && (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className={boxCls}><span className={labelCls}>Valor Total</span><span className="font-black text-slate-900">{brl(totalAmount)}</span></div>
+                <div className={boxCls}><span className={labelCls}>{interest > 0 ? 'Faturamento' : 'Valor Total'}</span><span className="font-black text-slate-900">{brl(revenue)}</span></div>
                 <div className={boxCls}><span className={labelCls}>Recebido</span><span className="font-bold text-slate-800">{brl(paymentsSum)}</span></div>
                 {change > 0 && <div className={boxCls}><span className={labelCls}>Troco</span><span className="font-bold text-slate-800">{brl(change)}</span></div>}
               </div>
@@ -410,7 +450,9 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
                       </span>
                       {p.payment_method === 'credit_card' && (
                         <span className="block text-slate-500">
-                          {p.installments > 1 ? `${p.installments}x de ${brl(Number(p.amount) / p.installments)}` : 'À vista (1x)'}
+                          {Number(p.interest) > 0
+                            ? `Inclui ${brl(Number(p.interest))} de juros da maquininha`
+                            : p.installments > 1 ? `${p.installments}x de ${brl(Number(p.amount) / p.installments)}` : 'À vista (1x)'}
                         </span>
                       )}
                       <span className="block text-[11px] text-slate-400">{dateTime(p.received_at)}</span>
@@ -453,6 +495,19 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
 
           {tab === 'warranty' && (
             <>
+              {sale.apple_warranty && (
+                <div className="rounded-xl border border-blue-200 bg-blue-50/40 p-4 space-y-1">
+                  <span className="font-bold text-slate-800 block">Termo de Garantia — Apple (1 Ano)</span>
+                  <span className="block text-slate-600">{sale.apple_warranty.title} · versão {sale.apple_warranty.version}</span>
+                  <span className="block text-slate-600">
+                    Apresentado em {dateTime(sale.apple_warranty.presented_at)}
+                    {sale.apple_warranty.acknowledged_at
+                      ? ` · ciência registrada em ${dateTime(sale.apple_warranty.acknowledged_at)} por ${userName(sale.apple_warranty.acknowledged_by) || 'vendedor'}`
+                      : ' · ciência não marcada'}
+                  </span>
+                  <span className="block text-[11px] text-slate-500">O termo completo está no PDF "Comprovante de Venda — Lacrado + Garantia Apple" (Documentos da Venda).</span>
+                </div>
+              )}
               {warranties.map((w) => {
                 const st = getWarrantyStatus(w);
                 const remaining = getDaysRemaining(w);
@@ -516,13 +571,13 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
           {notice && <p className="text-[11px] font-semibold text-slate-500">{notice}</p>}
           <div className="flex flex-wrap items-center justify-end gap-2">
             <SaleDocumentsMenu sale={sale} placement="up" onNotice={setNotice} />
-            {isAdmin && onCancel && !cancelled && (
+            {onDelete && !cancelled && (isAdmin || sale.seller_id === currentUser.id) && (
               <button
                 type="button"
-                onClick={onCancel}
+                onClick={onDelete}
                 className="px-3.5 py-2 rounded-xl border border-rose-200 bg-white text-rose-600 font-semibold text-[11px] hover:bg-rose-50 inline-flex items-center gap-1.5"
               >
-                <Ban className="w-3.5 h-3.5" /> Cancelar Venda
+                <Trash2 className="w-3.5 h-3.5" /> Excluir Venda
               </button>
             )}
             <button type="button" onClick={onClose} className="btn-tenant-primary px-5 py-2 rounded-xl font-bold text-[11px]">Fechar</button>

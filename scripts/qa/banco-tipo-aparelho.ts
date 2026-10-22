@@ -10,6 +10,7 @@ import { loadRealIdentity } from '../../src/lib/realSession';
 import { syncTenantRecords } from '../../src/lib/realData';
 import { getAvailableDocuments, getAutomaticDocuments, getSaleContext, SALE_DOCUMENTS } from '../../src/lib/pdf/saleDocuments';
 import { apagarDocumentosDoTeste, avisoHistorico } from './limpeza';
+import { vistoriaCompleta } from './vistoria';
 import { Device, DeviceType, Sale } from '../../src/types';
 
 let pass = 0, failN = 0;
@@ -45,7 +46,7 @@ const addDevice = (n: number, type: DeviceType) => {
 };
 const sell = (sellerId: string, customerId: string, deviceIds: string[]) =>
   store.finalizeSale({ tenantId: T, sellerId, customerId, salesOrigin: 'Outro', subtotal: 0, discountAmount: 0, totalAmount: 0, totalCost: 0,
-    items: deviceIds.map(deviceId => ({ itemType: 'device' as const, deviceId, quantity: 1, unitCost: 0, unitPrice: 5000, discount: 0, totalPrice: 0 })),
+    items: deviceIds.map(deviceId => ({ itemType: 'device' as const, deviceId, quantity: 1, unitCost: 0, unitPrice: 5000, discount: 0, totalPrice: 0, inspection: vistoriaCompleta() })),
     payments: [{ paymentMethod: 'pix', amount: 5000 * deviceIds.length, installments: 1 }], gifts: [] });
 const dbDevice = async (id: string) => (await supabase.from('devices').select('device_type').eq('id', id).maybeSingle()).data;
 // Texto do PDF gerado (layout padrão do sistema), com as quebras de linha desfeitas
@@ -122,10 +123,10 @@ const s1 = store.sales.find(s => s.id === saleSemi.id)!, s2 = store.sales.find(s
 check('admin recebe as três vendas com o tipo de cada item', ok && s1?.items?.[0].device_type === 'seminovo' && s2?.items?.[0].device_type === 'lacrado' && s3?.items?.length === 2, errs());
 let d = docsOf(s1);
 check('seminovo: Termo de Garantia + Comprovante de Venda — Seminovo; nada de lacrado',
-  d.labels.includes('Termo de Garantia') && d.labels.includes('Comprovante de Venda — Seminovo') && !d.labels.includes('Comprovante de Venda — Lacrado') && d.auto.join() === 'warranty-term', d.labels.join(', '));
+  d.labels.includes('Termo de Garantia') && d.labels.includes('Comprovante de Venda — Seminovo') && !d.labels.some(l => l.startsWith('Comprovante de Venda — Lacrado')) && d.auto.join() === 'warranty-term', d.labels.join(', '));
 d = docsOf(s2);
 check('lacrado: só o Comprovante de Venda — Lacrado (sem Termo de Garantia de seminovo), baixado automaticamente',
-  d.labels.includes('Comprovante de Venda — Lacrado') && !d.labels.includes('Termo de Garantia') && !d.labels.some(l => l.startsWith('Comprovante da Venda') || l.endsWith('Seminovo')) && d.auto.join() === 'receipt-sealed', d.labels.join(', '));
+  d.labels.some(l => l.startsWith('Comprovante de Venda — Lacrado')) && !d.labels.includes('Termo de Garantia') && !d.labels.some(l => l.startsWith('Comprovante da Venda') || l.endsWith('Seminovo')) && d.auto.join() === 'receipt-sealed', d.labels.join(', '));
 const lacText = pdfText(s2, 'receipt-sealed');
 check('comprovante de lacrado: aparelho, IMEI, tipo LACRADO, cliente com CPF e valor', lacText.includes(lac1.imei) && lacText.includes('LACRADO') && lacText.includes('123.456.789-00') && lacText.includes('5.000,00'));
 check('comprovante de lacrado: texto da garantia do fabricante', has(lacText, FABRICANTE), lacText.slice(-600));
@@ -135,7 +136,7 @@ const semiText = pdfText(s1, 'receipt');
 check('comprovante de seminovo: modelo atual, com a garantia comercial e sem os avisos do lacrado', semiText.includes(semi1.imei) && semiText.includes('Seminovo') && semiText.includes('Garantia comercial') && !semiText.includes('fabricante'));
 d = docsOf(s3);
 check('venda mista: um comprovante para cada tipo e o Termo de Garantia só do seminovo',
-  d.labels.includes('Comprovante de Venda — Seminovo') && d.labels.includes('Comprovante de Venda — Lacrado') && d.auto.includes('warranty-term') && d.auto.includes('receipt-sealed'), d.labels.join(', '));
+  d.labels.includes('Comprovante de Venda — Seminovo') && d.labels.some(l => l.startsWith('Comprovante de Venda — Lacrado')) && d.auto.includes('warranty-term') && d.auto.includes('receipt-sealed'), d.labels.join(', '));
 const mixSemi = pdfText(s3, 'receipt'), mixLac = pdfText(s3, 'receipt-sealed'), mixTerm = pdfText(s3, 'warranty-term');
 check('venda mista: cada comprovante lista só o seu aparelho',
   mixSemi.includes(semi2.imei) && !mixSemi.includes(lac2.imei) && mixLac.includes(lac2.imei) && !mixLac.includes(semi2.imei));
@@ -154,7 +155,7 @@ const again = store.sales.find(s => s.id === saleLac.id)!;
 d = docsOf(again);
 const preserved = pdfText(again, 'receipt-sealed');
 check('depois de mudar o tipo e o modelo no estoque, a venda continua com o comprovante de lacrado original',
-  ok && d.labels.includes('Comprovante de Venda — Lacrado') && !d.labels.includes('Termo de Garantia') && preserved.includes(`${TAG} iPhone lacrado 2`) && !preserved.includes('modelo editado'), d.labels.join(', '));
+  ok && d.labels.some(l => l.startsWith('Comprovante de Venda — Lacrado')) && !d.labels.includes('Termo de Garantia') && preserved.includes(`${TAG} iPhone lacrado 2`) && !preserved.includes('modelo editado'), d.labels.join(', '));
 
 // ============================================================================
 // 5. PERMISSÕES E ISOLAMENTO

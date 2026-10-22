@@ -3,7 +3,7 @@
 // ============================================================================
 
 import React, { useState } from 'react';
-import { Smartphone, Plus, Search, Battery, Eye, Pencil, X, ArrowUp, ArrowDown, ArrowUpDown, Wrench, DollarSign, Trash2, CheckCircle2 } from 'lucide-react';
+import { Smartphone, Plus, Layers, Search, Battery, Eye, Pencil, X, ArrowUp, ArrowDown, ArrowUpDown, Wrench, DollarSign, Trash2, CheckCircle2 } from 'lucide-react';
 import { store, normalizeImei, isValidImei, newUuid, IMEI_HINT } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Device, DeviceType } from '../../types';
@@ -11,6 +11,7 @@ import { DeviceTypeBadge, DEVICE_TYPE_LABELS } from '../../components/shared/Dev
 import { DeviceRemovalModal } from '../../components/shared/DeviceRemovalModal';
 import { MetricCard } from '../../components/shared/MetricCard';
 import { computeStockMetrics, formatBRL, pendingStockNote } from '../../lib/stockMetrics';
+import { DeviceBatchModal } from './DeviceBatchModal';
 
 // Dias corridos entre duas datas, pela data local da loja (evita deslocamento por fuso/horário)
 const calendarDay = (iso: string) => {
@@ -47,6 +48,7 @@ export const InventoryDevices: React.FC = () => {
   const [assistanceError, setAssistanceError] = useState('');
   const [removalDeviceId, setRemovalDeviceId] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
+  const [batchOpen, setBatchOpen] = useState(false);
   // Excluir ou inativar: só o administrador da loja (o banco confere de novo)
   const canRemove = currentUser.role === 'admin' || currentUser.role === 'super_admin';
 
@@ -285,13 +287,22 @@ export const InventoryDevices: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={openCreateModal}
-          className="btn-tenant-primary text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all active:scale-95"
-        >
-          <Plus className="w-4 h-4" />
-          Cadastrar Aparelho
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setBatchOpen(true)}
+            className="text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-all active:scale-95"
+          >
+            <Layers className="w-4 h-4" />
+            + Cadastrar Vários Aparelhos
+          </button>
+          <button
+            onClick={openCreateModal}
+            className="btn-tenant-primary text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all active:scale-95"
+          >
+            <Plus className="w-4 h-4" />
+            Cadastrar Aparelho
+          </button>
+        </div>
       </div>
 
       {notice && (
@@ -902,6 +913,18 @@ export const InventoryDevices: React.FC = () => {
             setRemovalDeviceId(null);
             setDetailDeviceId(null);
             setNotice(message);
+          }}
+        />
+      )}
+      {batchOpen && (
+        <DeviceBatchModal
+          tenantId={tenantId}
+          userId={currentUser.id}
+          userRole={currentUser.role}
+          onClose={() => setBatchOpen(false)}
+          onDone={(count) => {
+            setBatchOpen(false);
+            setNotice(`${count} ${count === 1 ? 'aparelho cadastrado' : 'aparelhos cadastrados'} no estoque, cada um com o seu IMEI.`);
           }}
         />
       )}

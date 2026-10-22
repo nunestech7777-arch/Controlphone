@@ -10,15 +10,19 @@ import { generateReceiptPDF } from '../../lib/pdf/generateReceiptPDF';
 import { Sale } from '../../types';
 import { SaleDetailModal } from '../../components/shared/SaleDetailModal';
 import { formatBRL } from '../../lib/labels';
+import { saleRevenue } from '../../lib/saleFinance';
+import { DeleteSaleModal } from '../../components/shared/DeleteSaleModal';
 
 export const SellerMySales: React.FC = () => {
   const { currentTenant, currentUser, currentTheme } = useAuth();
   const tenantId = currentTenant?.id || 'tenant-itech-01';
 
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [deleteSale, setDeleteSale] = useState<Sale | null>(null);
+  const [flash, setFlash] = useState('');
 
   const mySales = store.sales.filter(
-    s => s.tenant_id === tenantId && s.seller_id === currentUser.id
+    s => s.tenant_id === tenantId && s.seller_id === currentUser.id && !s.deleted_at && !s.trashed_at
   );
 
   const handleDownloadPDF = (sale: Sale) => {
@@ -77,7 +81,7 @@ export const SellerMySales: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 font-black text-slate-900">
-                      {formatBRL(Number(sale.total_amount))}
+                      {formatBRL(saleRevenue(sale))}
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
@@ -118,10 +122,28 @@ export const SellerMySales: React.FC = () => {
         </div>
       </div>
 
-      {detailId && mySales.find(s => s.id === detailId) && (
+      {flash && <p role="status" className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">{flash}</p>}
+
+      {detailId && !deleteSale && mySales.find(s => s.id === detailId) && (
         <SaleDetailModal
           sale={mySales.find(s => s.id === detailId) as Sale}
           onClose={() => setDetailId(null)}
+          onDelete={() => setDeleteSale(mySales.find(s => s.id === detailId) as Sale)}
+        />
+      )}
+
+      {deleteSale && (
+        <DeleteSaleModal
+          sale={deleteSale}
+          tenantId={tenantId}
+          userId={currentUser.id}
+          restrictRefund
+          onClose={() => setDeleteSale(null)}
+          onDeleted={() => {
+            setFlash(`Venda #${deleteSale.sale_number} excluída. O administrador acerta o estorno, se houver.`);
+            setDeleteSale(null);
+            setDetailId(null);
+          }}
         />
       )}
     </div>

@@ -7,14 +7,20 @@ import {
   Customer, Supplier, SupplierPurchase, Sale, TradeIn, ServiceOrder, InternalRepair,
   Expense, SalesGoal, AuditLog, SupportSession, PaymentMethod, DeviceMovement, MovementType, OSStatus,
   TenantSettings, Warranty, ReturnRequest, ReturnResolution, CustomerCredit, SaleItem, ExpenseCategory,
-  TenantDocument, TenantDocumentType, TenantFeatures, TenantPlan, TenantStatus, UserRole, DocumentTexts, DeviceType
+  TenantDocument, TenantDocumentType, TenantFeatures, TenantPlan, TenantStatus, UserRole, DocumentTexts, DeviceType,
+  DeviceInspection,
+  SaleDeletionDeviceSituation, SaleRefundStatus
 } from '../types';
 import { DEFAULT_FEATURES, buildDefaultTheme, isTenantOperational, sameCnpj } from './tenantSetup';
+import { InspectionDraft, isInspectionComplete } from './deviceInspection';
+import { saleRevenue } from './saleFinance';
+import { APPLE_WARRANTY_CURRENT, APPLE_WARRANTY_TERM_ID, isAppleSealedItem } from './appleWarranty';
 
 import {
   deleteRows, pushDocs, pushDocument, pushPlatformLogs, pushRows, pushSettings, pushSupportSession, pushTenant, pushTheme,
-  pushWholesaleSellerAccess, removeDocument, reserveNumbers
+  pushWholesaleSellerAccess, registerDevicesBatchOnServer, removeDocument, reserveNumbers
 } from './realSync';
+import { BatchUnit, MAX_BATCH, parseBRL, unitErrors } from './deviceBatch';
 
 export interface AssistanceResult {
   ok: boolean;
@@ -1430,6 +1436,109 @@ class ControlphoneStore {
     });
   }
 
+  /**
+   * CADASTRO EM LOTE (Estoque > Aparelhos > Cadastrar Vários Aparelhos): mesmo modelo, armazenamento,
+   * condição, fornecedor, origem e data; cada unidade vira um aparelho próprio, com IMEI, cor, bateria,
+   * custo e preço seus. No modo real o banco grava tudo numa transação (migration 25) e só então a cópia
+   * local é atualizada: ou todos entram, ou nenhum. Valores em reais, sem conversão de moeda.
+   */
+  async registerDeviceBatch(p: {
+    tenantId: string; userId: string; userRole: string; batchId: string;
+    brand: string; model: string; storage: string; deviceType: DeviceType;
+    supplierId?: string; origin: 'purchase' | 'internal_transfer'; entryDate: string;
+    units: BatchUnit[];
+    simulateFailure?: boolean;
+  }): Promise<OpResult<{ count: number; already: boolean; devices: Device[] }>> {
+    if (!this.isManager(p.userRole)) return opFail('Somente o administrador da loja pode cadastrar aparelhos.');
+    const brand = p.brand.trim(), model = p.model.trim(), storage = p.storage.trim();
+    if (!brand || !model || !storage) return opFail('Informe marca, modelo e armazenamento.');
+    if (brand.length > 100 || model.length > 150 || storage.length > 50) return opFail('Marca, modelo ou armazenamento longo demais.');
+    if (p.deviceType !== 'seminovo' && p.deviceType !== 'lacrado') return opFail('Informe a condição: Seminovo ou Lacrado.');
+    if (p.origin !== 'purchase' && p.origin !== 'internal_transfer') return opFail('Informe a origem dos aparelhos.');
+    if (p.units.length < 1 || p.units.length > MAX_BATCH) return opFail(`O lote deve ter de 1 a ${MAX_BATCH} aparelhos.`);
+    if (p.supplierId && !this.suppliers.some(s => s.id === p.supplierId && s.tenant_id === p.tenantId)) return opFail('Fornecedor não encontrado.');
+    const entry = new Date(p.entryDate);
+    if (Number.isNaN(entry.getTime()) || entry.getTime() > Date.now() + 86400000) return opFail('Informe uma data de entrada válida (não futura).');
+
+    // já gravado (resposta anterior perdida): só confirma
+    const already = p.units.every(u => this.devices.some(d => d.id === u.id));
+    if (already) return { ok: true, data: { count: p.units.length, already: true, devices: this.devices.filter(d => p.units.some(u => u.id === d.id)) } };
+
+    const errors = unitErrors(p.units, imei => Boolean(this.findDeviceByImei(p.tenantId, imei)), true);
+    const bad = Object.keys(errors).map(Number);
+    if (bad.length) return opFail(`Corrija ${bad.length === 1 ? 'a linha' : 'as linhas'} ${bad.map(i => i + 1).join(', ')}: ${errors[bad[0]]}. Nenhum aparelho foi cadastrado.`);
+
+    const now = new Date().toISOString();
+    const userName = this.profiles.find(x => x.id === p.userId)?.full_name;
+    const built = p.units.map((u, i) => {
+      const device: Device = {
+        id: u.id, tenant_id: p.tenantId, imei: normalizeImei(u.imei), brand, model, storage_capacity: storage,
+        color: u.color.trim(), battery_health: u.battery.trim() ? Number(u.battery) : undefined,
+        device_type: p.deviceType, supplier_id: p.supplierId || undefined, origin: p.origin,
+        acquisition_cost: Math.round(parseBRL(u.cost) * 100) / 100, accumulated_repair_cost: 0,
+        suggested_price: Math.round(parseBRL(u.price) * 100) / 100,
+        status: 'available', entry_date: entry.toISOString(), created_at: now
+      };
+      this.lastMovementAt = Math.max(Date.now(), this.lastMovementAt + 1);
+      const movement: DeviceMovement = {
+        id: `mov-lote-${u.id}`, tenant_id: p.tenantId, device_id: device.id, imei: device.imei,
+        movement_type: 'stock_entry', description: `Aparelho cadastrado no estoque (lote de ${p.units.length}, unidade ${i + 1})`,
+        to_status: 'available', cost: device.acquisition_cost, user_id: p.userId, user_name: userName,
+        created_at: new Date(this.lastMovementAt).toISOString()
+      };
+      const purchase: SupplierPurchase | undefined = device.supplier_id ? {
+        id: u.purchaseId, tenant_id: p.tenantId, supplier_id: device.supplier_id, item_type: 'device', item_id: device.id,
+        description: `${brand} ${model} ${storage} - ${device.color} (IMEI ${device.imei})`.slice(0, 255),
+        quantity: 1, unit_cost: device.acquisition_cost, total_cost: device.acquisition_cost,
+        purchased_at: device.entry_date, created_at: now
+      } : undefined;
+      return { device, movement, purchase };
+    });
+    const totalCost = built.reduce((acc, b) => acc + toCents(b.device.acquisition_cost), 0) / 100;
+    const log: AuditLog = {
+      id: `log-lote-${p.batchId}`, tenant_id: p.tenantId, user_id: p.userId, user_role: p.userRole,
+      action: 'APARELHOS_CADASTRADOS_LOTE', module: 'Estoque Aparelhos', record_id: p.batchId,
+      details: {
+        modelo: `${brand} ${model} ${storage}`, quantidade: built.length, tipo: p.deviceType,
+        fornecedor: this.getSupplierName(p.supplierId), custo_total: totalCost,
+        imeis: built.map(b => b.device.imei).join(', ')
+      },
+      created_at: now
+    };
+
+    let confirmed = false;
+    if (this.isRealMode) {
+      const res = await registerDevicesBatchOnServer({
+        devices: built.map(b => ({ device: b.device, movement: b.movement, ...(b.purchase ? { purchase: b.purchase } : {}) })),
+        log,
+        ...(p.simulateFailure ? { simulate_failure: true } : {})
+      }, p.tenantId);
+      if (!res.ok) return opFail(res.error);
+      confirmed = true;
+    } else if (p.simulateFailure) {
+      return opFail('A operação falhou e nenhum aparelho foi cadastrado.');
+    }
+
+    // banco confirmou (ou demonstração): a cópia local recebe os mesmos registros, sem reenviar
+    [...built].reverse().forEach(({ device, movement, purchase }) => {
+      if (this.devices.some(d => d.id === device.id)) return;
+      this.devices.unshift(device);
+      this.deviceMovements.unshift(movement);
+      if (purchase) this.supplierPurchases.unshift(purchase);
+      if (confirmed) {
+        this.syncedJson.set(`devices:${device.id}`, JSON.stringify(device));
+        this.syncedJson.set(`deviceMovements:${movement.id}`, '');
+        if (purchase) this.syncedJson.set(`supplierPurchases:${purchase.id}`, JSON.stringify(purchase));
+      }
+    });
+    if (!this.auditLogs.some(l => l.id === log.id)) {
+      this.auditLogs.unshift(log);
+      if (confirmed) this.syncedJson.set(`auditLogs:${log.id}`, '');
+    }
+    this.saveToStorage();
+    return { ok: true, data: { count: built.length, already: false, devices: built.map(b => b.device) } };
+  }
+
   // --------------------------------------------------------------------------
   // CLIENTES E FORNECEDORES — gravados no banco (modo real) com cópia local
   // --------------------------------------------------------------------------
@@ -1976,17 +2085,24 @@ class ControlphoneStore {
       unitPrice: number;
       discount: number;
       totalPrice: number;
+      /** Vistoria do aparelho (obrigatória para seminovo; ignorada nos demais) */
+      inspection?: InspectionDraft;
     }[];
     payments: {
       paymentMethod: PaymentMethod;
+      /** Parte do valor dos produtos paga nesta forma (sem juros) */
       amount: number;
       installments: number;
+      /** Juros da maquininha cobrados a mais nesta forma (somente cartão de crédito) */
+      interest?: number;
     }[];
     gifts: {
       giftId: string;
       quantity: number;
       unitCost: number;
     }[];
+    /** Aparelho Apple lacrado: o vendedor marcou a ciência do Termo de Garantia Apple apresentado */
+    appleWarrantyAcknowledged?: boolean;
   }): Sale {
     // Validação ANTES de qualquer baixa: o aparelho precisa estar disponível e não pode repetir no pedido
     const seenDevices = new Set<string>();
@@ -2076,6 +2192,13 @@ class ControlphoneStore {
     if (paidCents !== totalCents) {
       throw new Error(`Os pagamentos somam R$ ${(paidCents / 100).toFixed(2)}, mas o total da venda é R$ ${(totalCents / 100).toFixed(2)}.`);
     }
+    // Juros da maquininha: só no cartão de crédito, nunca negativos (somam ao valor cobrado, não aos produtos)
+    payload.payments.forEach(p => {
+      const interest = toCents(p.interest);
+      if (interest < 0) throw new Error('Os juros da maquininha não podem ser negativos.');
+      if (interest > 0 && p.paymentMethod !== 'credit_card') throw new Error('Juros da maquininha só podem ser informados no cartão de crédito.');
+    });
+    const interestCents = payload.payments.reduce((acc, p) => acc + toCents(p.interest), 0);
 
     // Crédito do cliente: nunca acima do saldo nem do total da venda
     const creditUseCents = payload.payments
@@ -2089,6 +2212,14 @@ class ControlphoneStore {
         throw new Error('O crédito utilizado não pode ser maior que o total da venda.');
       }
     }
+
+    // Seminovo só sai com a vistoria completa (SIM ou NÃO em cada pergunta)
+    payload.items.forEach(it => {
+      if (it.itemType !== 'device' || !it.deviceId) return;
+      const device = this.devices.find(d => d.id === it.deviceId && d.tenant_id === payload.tenantId);
+      const missing = this.missingInspection(device, it.inspection);
+      if (missing) throw new Error(missing);
+    });
 
     const saleId = uid('sale-');
     const saleNumber = this.nextNumber('sales', payload.tenantId);
@@ -2127,7 +2258,8 @@ class ControlphoneStore {
         total_price: it.totalPrice,
         // aparelho lacrado tem a garantia do fabricante: a loja não registra a garantia comercial de seminovo
         warranty_days: it.itemType === 'device' && device?.device_type !== 'lacrado' ? WARRANTY_DAYS : undefined,
-        ...this.deviceSnapshot(device)
+        ...this.deviceSnapshot(device),
+        ...this.inspectionRecord(device, it.inspection, payload.sellerId, now)
       };
     });
 
@@ -2151,8 +2283,10 @@ class ControlphoneStore {
       id: `spay-${saleId}-${idx}`,
       sale_id: saleId,
       payment_method: p.paymentMethod,
-      amount: p.amount,
+      // no crédito com juros, o pagamento registra o que foi cobrado do cliente (parte dos produtos + juros)
+      amount: (toCents(p.amount) + toCents(p.interest)) / 100,
       installments: p.installments,
+      ...(toCents(p.interest) > 0 ? { interest: toCents(p.interest) / 100 } : {}),
       received_at: now
     }));
 
@@ -2175,7 +2309,9 @@ class ControlphoneStore {
       items: processedItems,
       payments: processedPayments,
       gifts: processedGifts,
-      ...this.receiptSnapshot(payload.tenantId, processedItems)
+      ...(interestCents > 0 ? { card_interest: interestCents / 100 } : {}),
+      ...this.receiptSnapshot(payload.tenantId, processedItems),
+      ...this.appleWarrantyRecord(processedItems, payload.sellerId, now, payload.appleWarrantyAcknowledged)
     };
 
     this.sales.unshift(newSale);
@@ -2204,13 +2340,202 @@ class ControlphoneStore {
     return newSale;
   }
 
-  // Cancelamento de Venda com Reversão de Estoque
-  cancelSale(saleId: string, tenantId: string, userId: string, reason: string): OpResult {
+  /**
+   * EXCLUIR VENDA (exclusão lógica, somente administrador): a venda some da listagem normal e dos
+   * indicadores, fica gravada para auditoria com motivo, autor e data, e o estoque é ajustado conforme
+   * onde o aparelho estava. Pagamentos e documentos já emitidos são preservados; o estorno do dinheiro
+   * é tratado à parte (refund_status).
+   */
+  deleteSale(saleId: string, tenantId: string, userId: string, payload: {
+    reason: string;
+    deviceSituation: SaleDeletionDeviceSituation;
+    refundStatus: SaleRefundStatus;
+    refundAmount?: number;
+    refundNote?: string;
+    /** Estorno parcial ou concluído só vale com a confirmação de que o dinheiro foi devolvido de fato */
+    refundConfirmed?: boolean;
+  }): OpResult {
+    const sale = this.sales.find(s => s.id === saleId && s.tenant_id === tenantId);
+    if (!sale) return opFail('Venda não encontrada.');
+    if (sale.deleted_at) return opFail('Esta venda já foi excluída.');
+    // administrador exclui qualquer venda; vendedor, somente as que ele mesmo realizou
+    const manager = this.isManager(this.roleOf(userId));
+    if (!manager && !(this.roleOf(userId) === 'seller' && sale.seller_id === userId)) {
+      return opFail('Você só pode excluir vendas realizadas por você.');
+    }
+    // o estorno do dinheiro é acertado pelo administrador depois (área Vendas Excluídas)
+    if (!manager && payload.refundStatus !== 'pending' && payload.refundStatus !== 'not_needed') {
+      return opFail('O estorno é tratado pelo administrador: deixe como pendente.');
+    }
+    const refund = this.validateRefund(sale, payload.refundStatus, payload.refundAmount, payload.refundNote, payload.refundConfirmed);
+    if (!refund.ok) return opFail(refund.error!);
+    return this.cancelSale(saleId, tenantId, userId, payload.reason, {
+      deviceSituation: payload.deviceSituation,
+      refundStatus: payload.refundStatus,
+      refundAmount: payload.refundStatus === 'partial' ? payload.refundAmount : payload.refundStatus === 'done' ? saleRevenue(sale) : undefined,
+      refundNote: payload.refundNote?.trim() || undefined
+    });
+  }
+
+  private validateRefund(sale: Sale, status: SaleRefundStatus, amount?: number, note?: string, confirmed?: boolean): OpResult {
+    if (!['pending', 'partial', 'done', 'not_needed'].includes(status)) return opFail('Informe a situação do estorno.');
+    if (status === 'partial') {
+      const total = saleRevenue(sale);
+      if (!(Number(amount) > 0) || Number(amount) >= total) {
+        return opFail('No estorno parcial, informe o valor devolvido (maior que zero e menor que o total cobrado).');
+      }
+    }
+    if ((status === 'partial' || status === 'done') && !confirmed) {
+      return opFail('Confirme que o dinheiro foi realmente devolvido ao cliente antes de registrar o estorno.');
+    }
+    if (status === 'not_needed' && !note?.trim()) {
+      return opFail('Explique por que o estorno não é necessário.');
+    }
+    return { ok: true };
+  }
+
+  /** Atualiza a situação do estorno de uma venda já excluída (área "Vendas Excluídas"). */
+  updateDeletedSaleRefund(saleId: string, tenantId: string, userId: string, payload: {
+    status: SaleRefundStatus; amount?: number; note?: string; confirmed?: boolean;
+  }): OpResult {
+    const sale = this.sales.find(s => s.id === saleId && s.tenant_id === tenantId);
+    if (!sale || !sale.deleted_at) return opFail('Venda excluída não encontrada.');
+    if (!this.isManager(this.roleOf(userId))) return opFail('Somente administradores podem alterar o estorno.');
+    const check = this.validateRefund(sale, payload.status, payload.amount, payload.note, payload.confirmed);
+    if (!check.ok) return opFail(check.error!);
+    const before = sale.refund_status;
+    sale.refund_status = payload.status;
+    sale.refund_amount = payload.status === 'partial' ? Number(payload.amount) : payload.status === 'done' ? saleRevenue(sale) : undefined;
+    sale.refund_note = payload.note?.trim() || undefined;
+    sale.refund_updated_at = new Date().toISOString();
+    sale.refund_updated_by = userId;
+    this.addAuditLog({
+      tenant_id: tenantId, user_id: userId, user_role: this.roleOf(userId),
+      action: 'VENDA_EXCLUIDA_ESTORNO', module: 'Vendas', record_id: saleId,
+      details: { numero: sale.sale_number, de: before, para: payload.status, valor: sale.refund_amount }
+    });
+    this.saveToStorage();
+    return { ok: true };
+  }
+
+  /**
+   * Aparelho que estava com o cliente voltou fisicamente à loja: só depois dessa conferência ele
+   * sai do limbo. 'available' devolve ao estoque; 'awaiting_evaluation' bloqueia a venda até avaliar.
+   */
+  confirmDeletedSaleReturn(saleId: string, tenantId: string, userId: string, destination: 'available' | 'awaiting_evaluation'): OpResult {
+    const sale = this.sales.find(s => s.id === saleId && s.tenant_id === tenantId);
+    if (!sale || !sale.deleted_at) return opFail('Venda excluída não encontrada.');
+    if (!this.isManager(this.roleOf(userId))) return opFail('Somente administradores podem conferir o retorno do aparelho.');
+    if (!sale.deletion_return_pending) return opFail('Esta venda não tem retorno de aparelho pendente.');
+    const items = (sale.items || []).filter(it => !it.returned_at);
+    // nunca duplica IMEI: o mesmo cadastro volta a ser usado, só muda a situação
+    for (const it of items) {
+      if (it.item_type === 'device' && it.device_id) {
+        const device = this.devices.find(d => d.id === it.device_id && d.tenant_id === tenantId);
+        if (device && device.status === 'sold') {
+          device.status = destination;
+          device.sold_at = undefined;
+          this.recordMovement({
+            tenant_id: tenantId, device_id: device.id, imei: device.imei,
+            movement_type: 'sale_cancelled',
+            description: `Venda #${sale.sale_number} excluída: retorno físico conferido (${destination === 'available' ? 'volta ao estoque' : 'aguardando avaliação'})`,
+            from_status: 'sold', to_status: destination, notes: sale.deletion_reason, user_id: userId
+          });
+        }
+      } else if (destination === 'available' && it.item_type === 'accessory' && it.accessory_id) {
+        const acc = this.accessories.find(a => a.id === it.accessory_id && a.tenant_id === tenantId);
+        if (acc) acc.quantity += it.quantity;
+      }
+    }
+    if (destination === 'available') {
+      sale.gifts?.forEach(g => {
+        const giftItem = this.gifts.find(gf => gf.id === g.gift_id && gf.tenant_id === tenantId);
+        if (giftItem) giftItem.quantity += g.quantity;
+      });
+    }
+    sale.deletion_return_pending = false;
+    sale.deletion_return_confirmed_at = new Date().toISOString();
+    sale.deletion_return_confirmed_by = userId;
+    sale.deletion_device_situation = destination === 'available' ? 'in_store' : 'awaiting_evaluation';
+    this.addAuditLog({
+      tenant_id: tenantId, user_id: userId, user_role: this.roleOf(userId),
+      action: 'VENDA_EXCLUIDA_RETORNO', module: 'Vendas', record_id: saleId,
+      details: { numero: sale.sale_number, destino: destination }
+    });
+    this.saveToStorage();
+    return { ok: true };
+  }
+
+  // --------------------------------------------------------------------------
+  // LIXEIRA DE VENDAS: só vendas canceladas, só administrador. Nenhuma destas operações mexe em
+  // estoque, financeiro ou metas (a venda já está cancelada e fora de todos os indicadores).
+  // --------------------------------------------------------------------------
+
+  private trashTarget(saleId: string, tenantId: string, userId: string): OpResult<Sale> {
+    if (!this.isManager(this.roleOf(userId))) return opFail('Somente o administrador pode usar a lixeira de vendas.');
+    const sale = this.sales.find(s => s.id === saleId && s.tenant_id === tenantId);
+    if (!sale || sale.deleted_at) return opFail('Venda não encontrada.');
+    if (sale.purged_at) return opFail('Esta venda já foi excluída definitivamente.');
+    return { ok: true, data: sale };
+  }
+
+  moveSaleToTrash(saleId: string, tenantId: string, userId: string): OpResult {
+    const t = this.trashTarget(saleId, tenantId, userId);
+    if (!t.ok) return opFail(t.error!);
+    const sale = t.data!;
+    if (sale.status !== 'cancelled') return opFail('Somente vendas canceladas podem ir para a lixeira. Cancele a venda primeiro.');
+    if (sale.trashed_at) return opFail('Esta venda já está na lixeira.');
+    sale.trashed_at = new Date().toISOString();
+    sale.trashed_by = userId;
+    this.addAuditLog({ tenant_id: tenantId, user_id: userId, user_role: this.roleOf(userId), action: 'VENDA_LIXEIRA', module: 'Vendas', record_id: saleId, details: { numero: sale.sale_number } });
+    this.saveToStorage();
+    return { ok: true };
+  }
+
+  restoreSaleFromTrash(saleId: string, tenantId: string, userId: string): OpResult {
+    const t = this.trashTarget(saleId, tenantId, userId);
+    if (!t.ok) return opFail(t.error!);
+    const sale = t.data!;
+    if (!sale.trashed_at) return opFail('Esta venda não está na lixeira.');
+    // volta ao histórico ainda cancelada: não reativa a venda nem mexe no estoque
+    sale.trashed_at = undefined;
+    sale.trashed_by = undefined;
+    this.addAuditLog({ tenant_id: tenantId, user_id: userId, user_role: this.roleOf(userId), action: 'VENDA_RESTAURADA_LIXEIRA', module: 'Vendas', record_id: saleId, details: { numero: sale.sale_number, status: sale.status } });
+    this.saveToStorage();
+    return { ok: true };
+  }
+
+  purgeSaleFromTrash(saleId: string, tenantId: string, userId: string): OpResult {
+    const t = this.trashTarget(saleId, tenantId, userId);
+    if (!t.ok) return opFail(t.error!);
+    const sale = t.data!;
+    if (!sale.trashed_at) return opFail('Somente vendas na lixeira podem ser excluídas definitivamente.');
+    // some das telas, mas o registro, os pagamentos e o histórico ficam no banco para auditoria
+    sale.purged_at = new Date().toISOString();
+    sale.purged_by = userId;
+    this.addAuditLog({ tenant_id: tenantId, user_id: userId, user_role: this.roleOf(userId), action: 'VENDA_EXCLUIDA_DEFINITIVAMENTE', module: 'Vendas', record_id: saleId, details: { numero: sale.sale_number, total: saleRevenue(sale) } });
+    this.saveToStorage();
+    return { ok: true };
+  }
+
+  // Cancelamento de Venda com Reversão de Estoque (base da exclusão lógica: ver deleteSale)
+  cancelSale(
+    saleId: string, tenantId: string, userId: string, reason: string,
+    deletion?: { deviceSituation: SaleDeletionDeviceSituation; refundStatus: SaleRefundStatus; refundAmount?: number; refundNote?: string }
+  ): OpResult {
     const sale = this.sales.find(s => s.id === saleId && s.tenant_id === tenantId);
     if (!sale) return opFail('Venda não encontrada.');
     if (sale.status === 'cancelled') return opFail('Esta venda já foi cancelada.');
-    if (!reason.trim()) return opFail('Informe o motivo do cancelamento.');
-    if (!this.isManager(this.roleOf(userId))) return opFail('Somente administradores podem cancelar vendas.');
+    if (!reason.trim()) return opFail(deletion ? 'Informe o motivo da exclusão.' : 'Informe o motivo do cancelamento.');
+    const ownSellerDeletion = Boolean(deletion) && this.roleOf(userId) === 'seller' && sale.seller_id === userId;
+    if (!this.isManager(this.roleOf(userId)) && !ownSellerDeletion) {
+      return opFail(deletion ? 'Você só pode excluir vendas realizadas por você.' : 'Somente administradores podem cancelar vendas.');
+    }
+    const situation: SaleDeletionDeviceSituation = deletion?.deviceSituation || 'in_store';
+    // Upgrade devolve o aparelho do cliente na hora; aparelho já entregue segue pela Troca/Devolução
+    if (deletion && sale.trade_in_id && situation !== 'in_store') {
+      return opFail('Upgrade só pode ser excluído quando o aparelho nunca saiu da loja. Se o cliente já levou o aparelho, use Trocas e Devoluções.');
+    }
     if ((sale.items || []).some(it => it.returned_at)) {
       return opFail('Esta venda já teve troca ou devolução concluída (com reembolso, crédito ou aparelho substituto) e não pode mais ser cancelada.');
     }
@@ -2237,15 +2562,30 @@ class ControlphoneStore {
       if (it.item_type === 'device' && it.device_id) {
         const device = this.devices.find(d => d.id === it.device_id && d.tenant_id === tenantId);
         if (device && device.status === 'sold') {
-          device.status = 'available';
-          device.sold_at = undefined;
-          this.recordMovement({
-            tenant_id: tenantId, device_id: device.id, imei: device.imei,
-            movement_type: 'sale_cancelled', description: `Venda #${sale.sale_number} cancelada: aparelho devolvido ao estoque`,
-            from_status: 'sold', to_status: 'available', notes: reason, user_id: userId
-          });
+          const verb = deletion ? 'excluída' : 'cancelada';
+          if (situation === 'with_customer') {
+            // entregue ao cliente: não volta sozinho; a venda guarda a pendência de conferência física
+            this.recordMovement({
+              tenant_id: tenantId, device_id: device.id, imei: device.imei,
+              movement_type: 'sale_cancelled',
+              description: `Venda #${sale.sale_number} ${verb}: aparelho continua com o cliente (retorno físico pendente de conferência)`,
+              from_status: 'sold', to_status: 'sold', notes: reason, user_id: userId
+            });
+          } else {
+            const to = situation === 'awaiting_evaluation' ? 'awaiting_evaluation' : 'available';
+            device.status = to;
+            device.sold_at = undefined;
+            this.recordMovement({
+              tenant_id: tenantId, device_id: device.id, imei: device.imei,
+              movement_type: 'sale_cancelled',
+              description: to === 'available'
+                ? `Venda #${sale.sale_number} ${verb}: aparelho devolvido ao estoque`
+                : `Venda #${sale.sale_number} ${verb}: aparelho retornou e aguarda avaliação (bloqueado para venda)`,
+              from_status: 'sold', to_status: to, notes: reason, user_id: userId
+            });
+          }
         }
-      } else if (it.item_type === 'accessory' && it.accessory_id) {
+      } else if (it.item_type === 'accessory' && it.accessory_id && situation === 'in_store') {
         const acc = this.accessories.find(a => a.id === it.accessory_id && a.tenant_id === tenantId);
         if (acc) acc.quantity += it.quantity;
       }
@@ -2277,8 +2617,8 @@ class ControlphoneStore {
       tradeIn.status = 'cancelled';
     }
 
-    // Reverter brindes
-    sale.gifts?.forEach(g => {
+    // Reverter brindes (só quando tudo ficou na loja)
+    if (situation === 'in_store') sale.gifts?.forEach(g => {
       const giftItem = this.gifts.find(gf => gf.id === g.gift_id && gf.tenant_id === tenantId);
       if (giftItem) giftItem.quantity += g.quantity;
     });
@@ -2295,14 +2635,14 @@ class ControlphoneStore {
 
     this.warranties
       .filter(w => w.sale_id === sale.id && w.status === 'active')
-      .forEach(w => this.cancelWarranty(w, 'Venda cancelada: ' + reason, userId));
+      .forEach(w => this.cancelWarranty(w, `Venda ${deletion ? 'excluída' : 'cancelada'}: ${reason}`, userId));
 
     // Solicitações de troca/devolução ainda em andamento deixam de fazer sentido
     this.returnRequests
       .filter(r => r.sale_id === sale.id && ['open', 'in_review', 'approved'].includes(r.status))
       .forEach(r => {
         r.status = 'cancelled';
-        r.history.push(this.event('Status: Cancelada', userId, `Venda #${sale.sale_number} cancelada: ${reason}`));
+        r.history.push(this.event('Status: Cancelada', userId, `Venda #${sale.sale_number} ${deletion ? 'excluída' : 'cancelada'}: ${reason}`));
       });
 
     // A venda deixa de contar em receita, lucro, ranking e indicadores (todos usam status = concluída)
@@ -2310,12 +2650,24 @@ class ControlphoneStore {
     sale.cancellation_reason = reason;
     sale.cancelled_by = userId;
     sale.cancelled_at = new Date().toISOString();
+    if (deletion) {
+      sale.deleted_at = sale.cancelled_at;
+      sale.deleted_by = userId;
+      sale.deletion_reason = reason;
+      sale.deletion_device_situation = situation;
+      sale.deletion_return_pending = situation === 'with_customer' ? true : undefined;
+      sale.refund_status = deletion.refundStatus;
+      sale.refund_amount = deletion.refundAmount;
+      sale.refund_note = deletion.refundNote;
+      sale.refund_updated_at = sale.cancelled_at;
+      sale.refund_updated_by = userId;
+    }
 
     this.addAuditLog({
       tenant_id: tenantId,
       user_id: userId,
       user_role: this.roleOf(userId),
-      action: 'VENDA_CANCELADA',
+      action: deletion ? 'VENDA_EXCLUIDA' : 'VENDA_CANCELADA',
       module: 'Vendas',
       record_id: saleId,
       details: {
@@ -2323,7 +2675,14 @@ class ControlphoneStore {
         numero: sale.sale_number,
         tipo: tradeIn ? 'upgrade' : 'venda',
         aparelho_recebido_invalidado: received?.imei,
-        valor_estornado: sale.total_amount
+        valor_estornado: sale.total_amount,
+        ...(deletion ? {
+          situacao_aparelho: situation,
+          estorno: deletion.refundStatus,
+          pagamento_registrado: (sale.payments || []).length > 0
+        } : {}),
+        // cancelada, a venda sai inteira do faturamento, inclusive os juros cobrados no cartão
+        juros_maquininha_estornados: sale.card_interest || undefined
       }
     });
 
@@ -2345,10 +2704,14 @@ class ControlphoneStore {
     receivedColor: string;
     receivedBatteryHealth?: number;
     receivedNotes?: string;
+    /** Vistoria do aparelho vendido no upgrade (obrigatória quando ele é seminovo) */
+    soldDeviceInspection?: InspectionDraft;
     appraisalValue: number;
     paymentMethod: PaymentMethod;
     installments?: number;
     salesOrigin?: string;
+    /** Aparelho Apple lacrado entregue no upgrade: ciência do Termo de Garantia Apple apresentado */
+    appleWarrantyAcknowledged?: boolean;
   }): TradeIn {
     const soldCheck = this.devices.find(d => d.id === payload.soldDeviceId && d.tenant_id === payload.tenantId);
     if (!soldCheck || soldCheck.status !== 'available') {
@@ -2376,6 +2739,8 @@ class ControlphoneStore {
     const tradeInId = uid('trade-');
     const receivedDeviceId = known ? known.id : newUuid();
     const receivedSnapshot = known ? { ...known } : undefined;
+    const inspectionMissing = this.missingInspection(soldCheck, payload.soldDeviceInspection);
+    if (inspectionMissing) throw new Error(inspectionMissing);
     const saleId = uid('sale-');
     const saleNumber = this.nextNumber('sales', payload.tenantId);
     const soldDev = soldCheck;
@@ -2458,7 +2823,8 @@ class ControlphoneStore {
       discount: 0,
       total_price: payload.soldDevicePrice,
       warranty_days: soldDev.device_type === 'lacrado' ? undefined : WARRANTY_DAYS,
-      ...this.deviceSnapshot(soldDev)
+      ...this.deviceSnapshot(soldDev),
+      ...this.inspectionRecord(soldDev, payload.soldDeviceInspection, payload.sellerId, now)
     };
     const sale: Sale = {
       id: saleId,
@@ -2478,7 +2844,8 @@ class ControlphoneStore {
       items: [item],
       payments,
       gifts: [],
-      ...this.receiptSnapshot(payload.tenantId, [item])
+      ...this.receiptSnapshot(payload.tenantId, [item]),
+      ...this.appleWarrantyRecord([item], payload.sellerId, now, payload.appleWarrantyAcknowledged)
     };
     this.sales.unshift(sale);
     this.ensureWarrantyForItem(sale, item, payload.sellerId);
@@ -3331,7 +3698,49 @@ class ControlphoneStore {
     };
   }
 
+  // Vistoria do seminovo: mensagem do que falta (vazia = pode vender). Lacrado e sem tipo não têm vistoria.
+  private missingInspection(device: Device | undefined, draft?: InspectionDraft): string {
+    if (!device || device.device_type !== 'seminovo' || isInspectionComplete(draft)) return '';
+    return `Preencha a vistoria do aparelho ${device.brand} ${device.model} (IMEI ${device.imei}): marque SIM ou NÃO em todas as perguntas.`;
+  }
+
+  // Vistoria gravada no item (só para seminovo), ligada ao IMEI vendido
+  private inspectionRecord(device: Device | undefined, draft: InspectionDraft | undefined, sellerId: string, at: string): Pick<SaleItem, 'inspection'> {
+    if (!device || device.device_type !== 'seminovo' || !draft || !isInspectionComplete(draft)) return {};
+    const notes = draft.notes?.trim();
+    return {
+      inspection: {
+        answers: { ...draft.answers } as DeviceInspection['answers'],
+        ...(notes ? { notes: notes.slice(0, 1000) } : {}),
+        imei: device.imei,
+        inspected_by: sellerId,
+        inspected_at: at
+      }
+    };
+  }
+
   // Textos do comprovante vigentes no momento da venda
+  /**
+   * Venda com aparelho Apple lacrado: registra o Termo de Garantia Apple apresentado (identificação,
+   * versão exata e documento em que ele vai anexado) e, quando marcada, a ciência do cliente.
+   */
+  private appleWarrantyRecord(items: SaleItem[], userId: string, at: string, acknowledged?: boolean): Pick<Sale, 'apple_warranty'> {
+    const apple = items.filter(isAppleSealedItem);
+    if (apple.length === 0) return {};
+    return {
+      apple_warranty: {
+        term_id: APPLE_WARRANTY_TERM_ID,
+        version: APPLE_WARRANTY_CURRENT.version,
+        title: `${APPLE_WARRANTY_CURRENT.title} — ${APPLE_WARRANTY_CURRENT.subtitle}`,
+        document: 'receipt-sealed',
+        sale_item_ids: apple.map(i => i.id),
+        presented_at: at,
+        presented_by: userId,
+        ...(acknowledged ? { acknowledged_at: at, acknowledged_by: userId } : {})
+      }
+    };
+  }
+
   private receiptSnapshot(tenantId: string, items: SaleItem[]): Pick<Sale, 'sealed_receipt_notes' | 'receipt_version'> {
     const notes = this.getDocumentTexts(tenantId).lacrado_notes?.trim();
     return {
@@ -3417,6 +3826,7 @@ class ControlphoneStore {
       end_date: addDays(start, days),
       terms: this.seminovoTerms(sale.tenant_id),
       status: returned ? 'cancelled' : 'active',
+      ...(item.inspection ? { inspection: item.inspection } : {}),
       history: [this.event(`Garantia de ${days} dias registrada na venda #${sale.sale_number}`, userId)],
       created_at: new Date().toISOString()
     };
@@ -3762,6 +4172,13 @@ class ControlphoneStore {
     r.completed_at = now;
     r.device_destination = 'pending_evaluation';
     r.history.push(this.event('Solicitação concluída', p.userId, p.notes?.trim()));
+    if (Number(sale.card_interest) > 0) {
+      // devolução cuida só dos produtos: os juros cobrados no cartão continuam na venda original
+      r.history.push(this.event(
+        `Juros da maquininha da venda (R$ ${Number(sale.card_interest).toFixed(2).replace('.', ',')}) não fazem parte do valor desta solicitação e continuam registrados na venda #${sale.sale_number}`,
+        p.userId
+      ));
+    }
     this.addAuditLog({
       tenant_id: p.tenantId, user_id: p.userId, user_role: p.userRole,
       action: 'TROCA_DEVOLUCAO_CONCLUIDA', module: 'Trocas & Devoluções', record_id: r.id,

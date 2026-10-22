@@ -424,3 +424,32 @@ export async function deactivateDeviceOnServer(deviceId: string, reason: string)
   if (error) return { ok: false, error: removalError(error).error };
   return { ok: true };
 }
+
+// ---------------------------------------------------------------------------
+// CADASTRO EM LOTE DE APARELHOS (migration 25): tudo ou nada, numa transação
+// ---------------------------------------------------------------------------
+
+export type DeviceBatchServerResult =
+  | { ok: true; already: boolean }
+  | { ok: false; error: string; imeis?: string[] };
+
+export async function registerDevicesBatchOnServer(batch: Record<string, unknown>, tenantId: string): Promise<DeviceBatchServerResult> {
+  const { data, error } = await supabase.rpc('register_devices_batch', { p_batch: batch, p_tenant_id: tenantId });
+  if (!error && data) return { ok: true, already: Boolean((data as { already?: boolean }).already) };
+  const message = error?.message || '';
+  const detail = (error as { details?: string } | null)?.details || '';
+  const imeis = detail.split(/,\s*/).filter(Boolean);
+  if (message.includes('IMEI_JA_CADASTRADO')) return { ok: false, error: `IMEI já cadastrado nesta loja: ${detail}. Nenhum aparelho foi cadastrado.`, imeis };
+  if (message.includes('IMEI_DUPLICADO_LOTE')) return { ok: false, error: `IMEI repetido no lote: ${detail}. Nenhum aparelho foi cadastrado.`, imeis };
+  if (message.includes('IMEI_INVALIDO')) return { ok: false, error: `IMEI inválido: ${detail}. Nenhum aparelho foi cadastrado.`, imeis };
+  if (message.includes('LOTE_INVALIDO')) return { ok: false, error: `${detail || 'Dados do lote inválidos.'} Nenhum aparelho foi cadastrado.` };
+  if (message.includes('FALHA_SIMULADA')) return { ok: false, error: 'A operação falhou e nenhum aparelho foi cadastrado.' };
+  if (error?.code === '42501') return { ok: false, error: message || 'Somente o administrador da loja pode cadastrar aparelhos.' };
+  if (error?.code === 'PGRST202' || /register_devices_batch/.test(message)) {
+    return { ok: false, error: 'O cadastro em lote ainda não está ativo no banco (migration 25). Nenhum aparelho foi cadastrado.' };
+  }
+  if (!error?.code || /fetch|network|Failed/i.test(message)) {
+    return { ok: false, error: 'Não foi possível confirmar com o servidor. Verifique a conexão e clique de novo: o lote não será duplicado.' };
+  }
+  return { ok: false, error: 'Não foi possível cadastrar o lote. Nenhum aparelho foi cadastrado; tente de novo.' };
+}

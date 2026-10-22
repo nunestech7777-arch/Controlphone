@@ -15,6 +15,8 @@ import { buildServiceOrderPDF } from './serviceOrderPDF';
 import { BuiltDocument, DocumentAction, runBuiltDocumentAction } from './documentActions';
 import { saleTemplateValues, serviceOrderTemplateValues } from './templateValues';
 import { TenantDocumentType } from '../../types';
+import { saleRevenue } from '../saleFinance';
+import { buildAppleWarrantyDoc, saleHasAppleWarranty, writeAppleWarrantyPages } from './appleWarrantyPDF';
 
 export type { BuiltDocument, DocumentAction };
 
@@ -189,7 +191,7 @@ export const SALE_DOCUMENTS: SaleDocumentDef[] = [
       );
     },
     message: (ctx) =>
-      `Olá ${ctx.customer?.name || ''}, segue o comprovante da sua compra na ${storeNameOf(ctx)} (venda nº ${ctx.sale.sale_number}, total ${brl(ctx.sale.total_amount)}).`
+      `Olá ${ctx.customer?.name || ''}, segue o comprovante da sua compra na ${storeNameOf(ctx)} (venda nº ${ctx.sale.sale_number}, total ${brl(saleRevenue(ctx.sale))}).`
   },
   {
     id: 'receipt-sealed',
@@ -198,13 +200,18 @@ export const SALE_DOCUMENTS: SaleDocumentDef[] = [
     isAvailable: (ctx) => sealedItems(ctx.sale).length > 0,
     build: (ctx) => {
       const scope = sealedScope(ctx.sale);
-      return withSaleTemplate(
-        buildSealedReceiptPDF({ ...ctx, items: scope.items, includeGifts: scope.includeGifts }),
-        ctx, 'sale_receipt_sealed', scope.items, SEALED_RECEIPT_NOTICES
-      );
+      const built = buildSealedReceiptPDF({ ...ctx, items: scope.items, includeGifts: scope.includeGifts });
+      // Aparelho Apple lacrado: o Termo de Garantia Apple (versão gravada na venda) vai no mesmo arquivo
+      const apple = saleHasAppleWarranty(ctx.sale);
+      if (apple) writeAppleWarrantyPages(built.doc, ctx);
+      return {
+        ...withSaleTemplate(built, ctx, 'sale_receipt_sealed', scope.items, SEALED_RECEIPT_NOTICES),
+        ...(apple ? { appendix: () => buildAppleWarrantyDoc(ctx) } : {})
+      };
     },
     message: (ctx) =>
-      `Olá ${ctx.customer?.name || ''}, segue o comprovante da sua compra do aparelho lacrado na ${storeNameOf(ctx)} (venda nº ${ctx.sale.sale_number}).`
+      `Olá ${ctx.customer?.name || ''}, segue o comprovante da sua compra do aparelho lacrado na ${storeNameOf(ctx)} (venda nº ${ctx.sale.sale_number})` +
+      (saleHasAppleWarranty(ctx.sale) ? ', com o Termo de Garantia Apple (1 ano).' : '.')
   },
   {
     id: 'upgrade-declaration',
@@ -234,11 +241,14 @@ export const getSaleContext = (sale: Sale, tenant: Tenant, theme?: TenantTheme):
   sellerName: store.profiles.find(p => p.id === sale.seller_id)?.full_name || 'Vendedor'
 });
 
-// Nome do comprovante de sempre conforme a venda: "Seminovo" quando há aparelho classificado como seminovo
+// Nome do comprovante de sempre conforme a venda: "Seminovo" quando há aparelho classificado como seminovo;
+// o de lacrado avisa quando leva junto o Termo de Garantia Apple
 const labelFor = (def: SaleDocumentDef, ctx: SaleDocContext): SaleDocumentDef =>
   def.id === 'receipt' && activeItems(ctx.sale).some(it => it.item_type === 'device' && it.device_type === 'seminovo')
     ? { ...def, label: 'Comprovante de Venda — Seminovo' }
-    : def;
+    : def.id === 'receipt-sealed' && saleHasAppleWarranty(ctx.sale)
+      ? { ...def, label: 'Comprovante de Venda — Lacrado + Garantia Apple', description: 'Comprovante e Termo de Garantia Apple (1 ano) completo, no mesmo PDF' }
+      : def;
 
 export const getAvailableDocuments = (ctx: SaleDocContext) =>
   SALE_DOCUMENTS.filter(d => d.isAvailable(ctx)).map(d => labelFor(d, ctx));

@@ -8,9 +8,14 @@ import { store, WARRANTY_DAYS } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { SaleDocumentsMenu } from '../../components/shared/SaleDocumentsMenu';
 import { SALES_ORIGINS } from '../../lib/salesOrigins';
+import { DeviceInspectionForm } from '../../components/shared/DeviceInspectionForm';
+import { AppleWarrantyPanel } from '../../components/shared/AppleWarrantyPanel';
+import { isAppleSealed } from '../../lib/appleWarranty';
+import { InspectionDraft, emptyInspection, isInspectionComplete } from '../../lib/deviceInspection';
+import { saleInterest, saleRevenue } from '../../lib/saleFinance';
 import { DeviceTypeBadge, DEVICE_TYPE_LABELS } from '../../components/shared/DeviceTypeBadge';
 import { getAutomaticDocuments, getSaleContext, runDocumentAction } from '../../lib/pdf/saleDocuments';
-import { SaleItem, PaymentMethod, Device, Accessory, Gift } from '../../types';
+import { Sale, SaleItem, PaymentMethod, Device, Accessory, Gift } from '../../types';
 import { QuickCustomerCreate } from '../../components/shared/QuickCustomerCreate';
 import { PAYMENT_METHOD_LABELS, formatBRL } from '../../lib/labels';
 
@@ -25,6 +30,8 @@ interface CartItem {
   unitPrice: number;
   discount: number;
   unitCost: number; // Armazenado internamente mas não exibido ao vendedor
+  /** Aparelho seminovo: vistoria preenchida pelo vendedor antes de concluir */
+  inspection?: InspectionDraft;
 }
 
 interface CartGift {
@@ -40,6 +47,8 @@ interface ExtraPayment {
   method: PaymentMethod;
   amount: string;
   installments: number;
+  /** Juros da maquininha cobrados a mais neste pagamento (somente cartão de crédito) */
+  interest: string;
 }
 
 const PAYMENT_OPTIONS: { id: PaymentMethod; label: string }[] = [
@@ -48,7 +57,8 @@ const PAYMENT_OPTIONS: { id: PaymentMethod; label: string }[] = [
   { id: 'debit_card', label: 'Cartão de Débito' },
   { id: 'cash', label: 'Dinheiro' }
 ];
-const INSTALLMENT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 18];
+// Valor em reais digitado (vazio = zero); negativo ou inválido vira NaN para a validação recusar
+const moneyInput = (v: string) => (v.trim() === '' ? 0 : Number(v.replace(',', '.')));
 
 
 export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavigate }) => {
@@ -65,11 +75,14 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
 
   // Pagamento
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('pix');
-  const [installments, setInstallments] = useState<number>(1);
+  // Cartão de crédito: em vez de parcelas, o vendedor informa os juros da maquininha cobrados do cliente
+  const [mainInterest, setMainInterest] = useState('');
   const [extraPayments, setExtraPayments] = useState<ExtraPayment[]>([]);
   const [creditInput, setCreditInput] = useState<string>('');
   const [docNotice, setDocNotice] = useState('');
   const [finishedSale, setFinishedSale] = useState<any | null>(null);
+  // Termo de Garantia Apple: ciência de que o termo foi apresentado (só com aparelho Apple lacrado)
+  const [appleAck, setAppleAck] = useState(false);
 
   // Aparelho já colocado no pedido sai da lista (não pode ser vendido duas vezes)
   const availableDevices = store.devices.filter(
@@ -81,6 +94,11 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
   const giftStock = (id: string) => store.gifts.find(g => g.id === id)?.quantity || 0;
   const features = store.getTenantFeatures(tenantId);
   const customers = store.customers.filter(c => c.tenant_id === tenantId);
+  // Aparelhos Apple lacrados do pedido: carregam o componente de garantia Apple, sem campo novo
+  const appleSealedDevices = cartItems
+    .map(it => ({ it, dev: it.deviceId ? store.devices.find(d => d.id === it.deviceId) : undefined }))
+    .filter(({ dev }) => isAppleSealed(dev))
+    .map(({ it, dev }) => ({ key: it.id, brand: dev!.brand, model: dev!.model, storage: dev!.storage_capacity, color: dev!.color, imei: dev!.imei }));
 
   // Cálculos do carrinho (sem expor custo ou lucro ao vendedor)
   const subtotal = cartItems.reduce((acc, it) => acc + (it.unitPrice * it.quantity), 0);
@@ -93,6 +111,11 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
   // Pagamento dividido: as formas adicionais têm valor digitado e a principal fica com o restante
   const extrasTotal = Math.round(extraPayments.reduce((acc, p) => acc + (parseFloat(p.amount) || 0), 0) * 100) / 100;
   const mainAmount = Math.round((amountDue - extrasTotal) * 100) / 100;
+  // Juros da maquininha (somente nas formas em cartão de crédito): somam ao total cobrado, não aos produtos
+  const mainInterestNum = paymentMethod === 'credit_card' ? moneyInput(mainInterest) : 0;
+  const extrasInterest = extraPayments.reduce((acc, p) => acc + (p.method === 'credit_card' ? moneyInput(p.interest) : 0), 0);
+  const totalInterest = Math.round(((Number.isFinite(mainInterestNum) ? mainInterestNum : 0) + (Number.isFinite(extrasInterest) ? extrasInterest : 0)) * 100) / 100;
+  const totalCharged = Math.round((totalAmount + totalInterest) * 100) / 100;
 
   const totalCost = cartItems.reduce((acc, it) => acc + (it.unitCost * it.quantity), 0) +
     cartGifts.reduce((acc, g) => acc + (g.unitCost * g.quantity), 0);
@@ -108,7 +131,9 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
       quantity: 1,
       unitPrice: Number(device.suggested_price),
       discount: 0,
-      unitCost: Number(device.acquisition_cost) + Number(device.accumulated_repair_cost)
+      unitCost: Number(device.acquisition_cost) + Number(device.accumulated_repair_cost),
+      // Vistoria só para seminovo (lacrado e aparelho sem tipo não têm)
+      inspection: device.device_type === 'seminovo' ? emptyInspection() : undefined
     };
     setCartItems(prev => [...prev, newItem]);
     setItemSelectorType(null);
@@ -180,6 +205,12 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
       return;
     }
 
+    const pendingInspection = cartItems.find(it => it.inspection && !isInspectionComplete(it.inspection));
+    if (pendingInspection) {
+      alert(`Preencha a vistoria do aparelho ${pendingInspection.title}: marque SIM ou NÃO em todas as perguntas.`);
+      return;
+    }
+
     if (cartItems.some(it => !(it.unitPrice > 0))) {
       alert('Informe um preço maior que zero para cada item.');
       return;
@@ -190,6 +221,15 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
     }
     if (extraPayments.some(p => !(parseFloat(p.amount) > 0))) {
       alert('Informe o valor de cada forma de pagamento adicional (ou remova a linha).');
+      return;
+    }
+    const interests = [mainInterestNum, ...extraPayments.filter(p => p.method === 'credit_card').map(p => moneyInput(p.interest))];
+    if (interests.some(v => !Number.isFinite(v) || v < 0)) {
+      alert('Informe os juros da maquininha em reais (zero ou mais).');
+      return;
+    }
+    if (mainInterestNum > 0 && !(mainAmount > 0)) {
+      alert('Os juros da maquininha foram informados no cartão de crédito, mas as outras formas já cobrem todo o valor.');
       return;
     }
     if (mainAmount < 0) {
@@ -216,17 +256,20 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
           unitCost: it.unitCost,
           unitPrice: it.unitPrice,
           discount: it.discount,
-          totalPrice: (it.unitPrice - it.discount) * it.quantity
+          totalPrice: (it.unitPrice - it.discount) * it.quantity,
+          inspection: it.inspection
         })),
+        appleWarrantyAcknowledged: appleSealedDevices.length > 0 && appleAck,
         payments: [
           ...(creditUse > 0 ? [{ paymentMethod: 'store_credit' as PaymentMethod, amount: creditUse, installments: 1 }] : []),
           ...(mainAmount > 0
-            ? [{ paymentMethod, amount: mainAmount, installments: paymentMethod === 'credit_card' ? installments : 1 }]
+            ? [{ paymentMethod, amount: mainAmount, installments: 1, interest: mainInterestNum > 0 ? mainInterestNum : undefined }]
             : []),
           ...extraPayments.map(p => ({
             paymentMethod: p.method,
             amount: Math.round(parseFloat(p.amount) * 100) / 100,
-            installments: p.method === 'credit_card' ? p.installments : 1
+            installments: 1,
+            interest: p.method === 'credit_card' && moneyInput(p.interest) > 0 ? moneyInput(p.interest) : undefined
           }))
         ],
         gifts: cartGifts.map(g => ({
@@ -263,19 +306,33 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
         </h2>
         <p className="text-xs text-slate-500 font-medium max-w-md mx-auto">
           O estoque foi baixado automaticamente. {(finishedSale.items as SaleItem[] | undefined)?.some(i => i.device_type === 'lacrado')
-            ? 'O comprovante do aparelho lacrado foi gerado e baixado'
+            ? ((finishedSale as Sale).apple_warranty
+              ? 'O comprovante do aparelho lacrado, com o Termo de Garantia Apple (1 ano) completo, foi gerado e baixado'
+              : 'O comprovante do aparelho lacrado foi gerado e baixado')
             : 'O Termo de Garantia foi gerado e baixado'}; os demais documentos estão em "Documentos da Venda".
         </p>
 
         <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm max-w-sm mx-auto text-left space-y-2 text-xs">
           <div className="flex justify-between">
             <span className="text-slate-400">Total Pago:</span>
-            <span className="font-black text-blue-600 text-sm">{formatBRL(finishedSale.total_amount)}</span>
+            <span className="font-black text-blue-600 text-sm">{formatBRL(saleRevenue(finishedSale))}</span>
           </div>
-          {(finishedSale.payments || []).map((p: { id: string; payment_method: PaymentMethod; amount: number; installments: number }) => (
+          {saleInterest(finishedSale) > 0 && (
+            <>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Valor dos produtos:</span>
+                <span className="font-bold text-slate-700">{formatBRL(finishedSale.total_amount)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Juros da maquininha:</span>
+                <span className="font-bold text-slate-700">{formatBRL(saleInterest(finishedSale))}</span>
+              </div>
+            </>
+          )}
+          {(finishedSale.payments || []).map((p: { id: string; payment_method: PaymentMethod; amount: number; installments: number; interest?: number }) => (
             <div key={p.id} className="flex justify-between">
               <span className="text-slate-400">
-                {PAYMENT_METHOD_LABELS[p.payment_method]}{p.installments > 1 ? ` (${p.installments}x)` : ''}:
+                {PAYMENT_METHOD_LABELS[p.payment_method]}{p.installments > 1 ? ` (${p.installments}x)` : ''}{p.interest ? ' (com juros)' : ''}:
               </span>
               <span className="font-bold text-slate-700">{formatBRL(p.amount)}</span>
             </div>
@@ -293,11 +350,12 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
               setFinishedSale(null);
               setCartItems([]);
               setCartGifts([]);
+              setAppleAck(false);
               setSalesOrigin('');
               setSelectedCustomerId('');
               setCreditInput('');
               setExtraPayments([]);
-              setInstallments(1);
+              setMainInterest('');
               setDocNotice('');
             }}
             className="px-5 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 font-bold text-xs text-slate-700"
@@ -390,18 +448,26 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
 
             <div className="divide-y divide-slate-100 text-xs">
               {cartItems.map((item) => (
-                <div key={item.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/50">
+                <div key={item.id} className="p-4 hover:bg-slate-50/50">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex-1">
                     <span className="font-extrabold text-slate-800 text-sm block">{item.title}</span>
                     <span className="text-[11px] text-slate-400">{item.details}</span>
-                    {item.itemType === 'device' && (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
-                        <span className="font-bold text-slate-600">Garantia do Aparelho:</span>
-                        <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold">
-                          {WARRANTY_DAYS} dias
-                        </span>
-                      </div>
-                    )}
+                    {item.itemType === 'device' && (() => {
+                      // lacrado não tem a garantia da loja: Apple tem a garantia Apple de 1 ano; outras marcas, a do fabricante
+                      const dev = store.devices.find(d => d.id === item.deviceId);
+                      const label = dev?.device_type === 'lacrado'
+                        ? (isAppleSealed(dev) ? 'Garantia Apple (1 ano)' : 'Garantia do fabricante')
+                        : `${WARRANTY_DAYS} dias`;
+                      return (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+                          <span className="font-bold text-slate-600">Garantia do Aparelho:</span>
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold">
+                            {label}
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className="flex flex-wrap items-center gap-4">
@@ -461,6 +527,14 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
                     </button>
                   </div>
                 </div>
+                {item.inspection && (
+                  <DeviceInspectionForm
+                    idPrefix={`vistoria-${item.id}`}
+                    value={item.inspection}
+                    onChange={(next) => setCartItems(prev => prev.map(i => i.id === item.id ? { ...i, inspection: next } : i))}
+                  />
+                )}
+                </div>
               ))}
 
               {/* BRINDES CORTESIA (R$ 0,00) */}
@@ -508,6 +582,17 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
               )}
             </div>
           </div>
+
+          {/* COMPONENTE DE GARANTIA APPLE: só com aparelho Apple lacrado no pedido */}
+          {appleSealedDevices.length > 0 && (
+            <AppleWarrantyPanel
+              devices={appleSealedDevices}
+              customerName={customers.find(c => c.id === selectedCustomerId)?.name}
+              sellerName={currentUser.full_name}
+              acknowledged={appleAck}
+              onAcknowledgedChange={setAppleAck}
+            />
+          )}
         </div>
 
         {/* COLUNA DIREITA: RESUMO, ORIGEM OBRIGATÓRIA & PAGAMENTO */}
@@ -553,18 +638,18 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
 
             {paymentMethod === 'credit_card' && (
               <div className="pt-2">
-                <label className="text-[11px] font-bold text-slate-500 block mb-1">Parcelas no Cartão</label>
-                <select
-                  value={installments}
-                  onChange={(e) => setInstallments(parseInt(e.target.value))}
-                  className="w-full text-xs px-3 py-2 rounded-xl border border-slate-200"
-                >
-                  {INSTALLMENT_OPTIONS.map((n) => (
-                    <option key={n} value={n}>
-                      {n}x de {formatBRL(Math.max(0, mainAmount) / n)}
-                    </option>
-                  ))}
-                </select>
+                <label htmlFor="pos-main-interest" className="text-[11px] font-bold text-slate-500 block mb-1">JUROS DA MAQUININHA (R$)</label>
+                <input
+                  id="pos-main-interest"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0,00"
+                  value={mainInterest}
+                  onChange={(e) => setMainInterest(e.target.value)}
+                  className="w-full text-xs px-3 py-2 rounded-xl border border-slate-200 font-bold"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">Valor cobrado a mais do cliente no crédito. Não muda o preço do aparelho nem o lucro.</p>
               </div>
             )}
 
@@ -600,16 +685,16 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
                   </button>
                 </div>
                 {p.method === 'credit_card' && (
-                  <select
-                    value={p.installments}
-                    onChange={(e) => setExtraPayments(prev => prev.map(x => x.id === p.id ? { ...x, installments: parseInt(e.target.value) } : x))}
-                    aria-label="Parcelas"
-                    className="w-full text-xs px-3 py-2 rounded-xl border border-slate-200"
-                  >
-                    {INSTALLMENT_OPTIONS.map((n) => (
-                      <option key={n} value={n}>{n}x de {formatBRL((parseFloat(p.amount) || 0) / n)}</option>
-                    ))}
-                  </select>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="Juros da maquininha (R$)"
+                    value={p.interest}
+                    onChange={(e) => setExtraPayments(prev => prev.map(x => x.id === p.id ? { ...x, interest: e.target.value } : x))}
+                    aria-label="Juros da maquininha (R$) neste pagamento"
+                    className="w-full text-xs px-3 py-2 rounded-xl border border-slate-200 font-bold"
+                  />
                 )}
               </div>
             ))}
@@ -624,7 +709,7 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
 
             <button
               type="button"
-              onClick={() => setExtraPayments(prev => [...prev, { id: 'pay-' + Date.now(), method: 'cash', amount: '', installments: 1 }])}
+              onClick={() => setExtraPayments(prev => [...prev, { id: 'pay-' + Date.now(), method: 'cash', amount: '', installments: 1, interest: '' }])}
               className="text-[11px] font-bold text-slate-600 hover:text-slate-900 inline-flex items-center gap-1"
             >
               <Plus className="w-3.5 h-3.5" /> Dividir em outra forma de pagamento
@@ -672,12 +757,30 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
                 <span className="font-bold">- {formatBRL(creditUse)}</span>
               </div>
             )}
+            {/* RESUMO DA VENDA: produtos, juros da maquininha (à parte) e o total cobrado em destaque */}
+            <div className="pt-3 border-t border-slate-100 space-y-1.5">
+              <span className="block text-[10px] font-extrabold uppercase tracking-wider text-slate-400">Resumo da venda</span>
+              <div className="flex justify-between text-slate-600">
+                <span>Valor dos produtos:</span>
+                <span className="font-semibold">{formatBRL(totalAmount)}</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Juros da maquininha:</span>
+                <span className="font-semibold">{formatBRL(totalInterest)}</span>
+              </div>
+            </div>
             <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
-              <span className="text-sm font-extrabold text-slate-800">TOTAL A RECEBER:</span>
+              <span className="text-sm font-extrabold text-slate-800">TOTAL DA VENDA:</span>
               <span className="text-2xl font-black text-tenant-primary">
-                {formatBRL(amountDue)}
+                {formatBRL(totalCharged)}
               </span>
             </div>
+            {creditUse > 0 && (
+              <div className="flex justify-between text-slate-600">
+                <span>A receber agora (descontado o crédito do cliente):</span>
+                <span className="font-bold">{formatBRL(Math.round((amountDue + totalInterest) * 100) / 100)}</span>
+              </div>
+            )}
 
             <button
               onClick={handleFinishSale}

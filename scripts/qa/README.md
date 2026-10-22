@@ -17,6 +17,12 @@ Testes que exercitam o motor de dados do app (`src/lib/store.ts`) fora do navega
 | `banco-exclusao-aparelho.ts` | Exclusão e inativação de aparelhos: estoque e compra do fornecedor corrigidos na mesma transação, bloqueios por vínculo, falha sem alteração parcial, permissões e histórico | Sim |
 | `banco-origens.ts` | Origem do cliente e da venda (orgânico x anúncio pago): gravação no banco e relatório separado por origem | Sim |
 | `banco-editar-acessorio.ts` | Edição de acessório e brinde (quantidade, custo, preço e fornecedor) e correção da compra no fornecedor | Sim |
+| `banco-vistoria.ts` | Vistoria do seminovo na venda: obrigatória no seminovo, ausente no lacrado, gravada com o IMEI e marcada com X no Termo de Garantia | Sim |
+| `banco-cadastro-lote.ts` | Cadastro em lote: um registro por IMEI, custo individual, tudo ou nada, IMEI repetido, reenvio sem duplicar, colar IMEIs, venda de 1 unidade, sem grade (**exige a migration 25**) | Sim |
+| `banco-garantia-apple.ts` | Termo de Garantia Apple (1 ano) do lacrado: registro na venda (versão e ciência), PDF único com comprovante + texto integral conferido parágrafo a parágrafo, seminovo e outras marcas sem o termo | Sim |
+| `banco-lixeira.ts` | Lixeira de vendas canceladas: mover, restaurar (continua cancelada), excluir definitivamente, sem mexer em estoque/financeiro/metas, auditoria e proteção no banco (**exige a migration 26**) | Sim |
+| `banco-exclusao-venda.ts` | Excluir Venda (exclusão lógica): indicadores, estoque por situação do aparelho, estorno, garantia, auditoria e proteção no banco (**exige a migration 24**) | Sim |
+| `banco-juros.ts` | Juros da maquininha no crédito: faturamento com juros, lucro sem juros, pagamento misto, comprovante, cancelamento e devolução | Sim |
 | `desempenho-fila.ts` | Tempo de uma gravação com muito histórico (5.000 vendas, 20.000 movimentações) | Não |
 
 ## Rodar
@@ -36,6 +42,12 @@ sh scripts/qa/rodar.sh banco-tipo-aparelho
 sh scripts/qa/rodar.sh banco-exclusao-aparelho
 sh scripts/qa/rodar.sh banco-origens
 sh scripts/qa/rodar.sh banco-editar-acessorio
+sh scripts/qa/rodar.sh banco-vistoria
+sh scripts/qa/rodar.sh banco-juros
+sh scripts/qa/rodar.sh banco-exclusao-venda
+sh scripts/qa/rodar.sh banco-cadastro-lote
+sh scripts/qa/rodar.sh banco-lixeira
+sh scripts/qa/rodar.sh banco-garantia-apple
 node scripts/qa/banco-regras-de-acesso.mjs "$QA_SELLER_EMAIL"
 ```
 

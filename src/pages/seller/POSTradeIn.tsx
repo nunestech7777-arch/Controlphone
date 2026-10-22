@@ -11,6 +11,10 @@ import { PaymentMethod } from '../../types';
 import { QuickCustomerCreate } from '../../components/shared/QuickCustomerCreate';
 import { SaleDocumentsMenu } from '../../components/shared/SaleDocumentsMenu';
 import { DEVICE_TYPE_LABELS } from '../../components/shared/DeviceTypeBadge';
+import { DeviceInspectionForm } from '../../components/shared/DeviceInspectionForm';
+import { AppleWarrantyPanel } from '../../components/shared/AppleWarrantyPanel';
+import { isAppleSealed } from '../../lib/appleWarranty';
+import { InspectionDraft, emptyInspection, isInspectionComplete } from '../../lib/deviceInspection';
 import { SALES_ORIGINS } from '../../lib/salesOrigins';
 import { getAutomaticDocuments, getSaleContext, runDocumentAction } from '../../lib/pdf/saleDocuments';
 
@@ -21,6 +25,8 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
   const [customerId, setCustomerId] = useState('');
   const [soldDeviceId, setSoldDeviceId] = useState('');
   const [soldDevicePrice, setSoldDevicePrice] = useState('');
+  // Vistoria do aparelho entregue ao cliente (somente quando ele é seminovo)
+  const [inspection, setInspection] = useState<InspectionDraft>(emptyInspection());
 
   // Aparelho Usado Recebido
   const [receivedBrand, setReceivedBrand] = useState('Apple');
@@ -36,8 +42,13 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
   const [installments, setInstallments] = useState(1);
   const [salesOrigin, setSalesOrigin] = useState('');
   const [successTradeIn, setSuccessTradeIn] = useState<any | null>(null);
+  // Termo de Garantia Apple: ciência de que o termo foi apresentado (só com aparelho Apple lacrado)
+  const [appleAck, setAppleAck] = useState(false);
 
   const availableDevices = store.devices.filter(d => d.tenant_id === tenantId && d.status === 'available');
+  const soldDevice = availableDevices.find(d => d.id === soldDeviceId);
+  const soldIsSeminovo = soldDevice?.device_type === 'seminovo';
+  const soldIsAppleSealed = isAppleSealed(soldDevice);
   const customers = store.customers.filter(c => c.tenant_id === tenantId);
 
   const soldPriceNum = parseFloat(soldDevicePrice) || 0;
@@ -48,6 +59,11 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
     e.preventDefault();
     if (!customerId || !soldDeviceId || !soldDevicePrice || !receivedModel || !receivedImei || !appraisalValue || !salesOrigin) {
       alert('Preencha todos os campos obrigatórios do upgrade!');
+      return;
+    }
+
+    if (soldIsSeminovo && !isInspectionComplete(inspection)) {
+      alert('Preencha a vistoria do aparelho entregue ao cliente: marque SIM ou NÃO em todas as perguntas.');
       return;
     }
 
@@ -78,7 +94,9 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
         appraisalValue: appraisalNum,
         paymentMethod,
         installments,
-        salesOrigin
+        salesOrigin,
+        soldDeviceInspection: soldIsSeminovo ? inspection : undefined,
+        appleWarrantyAcknowledged: soldIsAppleSealed && appleAck
       });
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Não foi possível concluir o upgrade.');
@@ -134,6 +152,8 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
               setCustomerId('');
               setSoldDeviceId('');
               setSoldDevicePrice('');
+              setInspection(emptyInspection());
+              setAppleAck(false);
               setReceivedBrand('Apple');
               setReceivedModel('');
               setReceivedStorage('128GB');
@@ -213,6 +233,8 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
                 onChange={(e) => {
                   const devId = e.target.value;
                   setSoldDeviceId(devId);
+                  setInspection(emptyInspection());
+                  setAppleAck(false);
                   const dev = availableDevices.find(d => d.id === devId);
                   if (dev) setSoldDevicePrice(dev.suggested_price.toString());
                 }}
@@ -241,7 +263,21 @@ export const POSTradeIn: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
               />
             </div>
           </div>
+          {soldIsSeminovo && (
+            <DeviceInspectionForm idPrefix="vistoria-upgrade" value={inspection} onChange={setInspection} />
+          )}
         </div>
+
+        {/* COMPONENTE DE GARANTIA APPLE: aparelho Apple lacrado entregue no upgrade */}
+        {soldDevice && soldIsAppleSealed && (
+          <AppleWarrantyPanel
+            devices={[{ key: soldDevice.id, brand: soldDevice.brand, model: soldDevice.model, storage: soldDevice.storage_capacity, color: soldDevice.color, imei: soldDevice.imei }]}
+            customerName={customers.find(c => c.id === customerId)?.name}
+            sellerName={currentUser.full_name}
+            acknowledged={appleAck}
+            onAcknowledgedChange={setAppleAck}
+          />
+        )}
 
         {/* APARELHO USADO RECEBIDO (ENTRADA AUTOMÁTICA) */}
         <div className="bg-white p-5 rounded-3xl border-2 border-purple-100 shadow-sm space-y-4">

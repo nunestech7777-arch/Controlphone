@@ -6,6 +6,9 @@
 // cliente") e continuam aparecendo assim nos relatórios: nada é convertido.
 // ============================================================================
 
+import { saleRevenue } from './saleFinance';
+import { Sale } from '../types';
+
 export const SALES_ORIGINS = [
   'Instagram',
   'Instagram Ads',
@@ -36,13 +39,13 @@ export interface OriginSummary {
  * Quantidade de vendas e faturamento por origem, da maior para a menor. Cada origem é uma linha:
  * orgânico e anúncio pago da mesma rede nunca são somados.
  */
-export function salesByOrigin(sales: { sales_origin?: string; total_amount: number }[]): OriginSummary[] {
+export function salesByOrigin(sales: Sale[]): OriginSummary[] {
   const totals = new Map<string, { count: number; cents: number }>();
   sales.forEach(s => {
     const key = (s.sales_origin || 'Não informada').trim();
     const row = totals.get(key) || { count: 0, cents: 0 };
     row.count += 1;
-    row.cents += Math.round(Number(s.total_amount) * 100);
+    row.cents += Math.round(saleRevenue(s) * 100); // faturamento: inclui os juros cobrados no cartão
     totals.set(key, row);
   });
   return [...totals.entries()]

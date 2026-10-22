@@ -3,7 +3,7 @@
 // ============================================================================
 
 import React, { useState } from 'react';
-import { ShoppingBag, Search, FileDown, Ban, AlertTriangle, X, Eye } from 'lucide-react';
+import { ShoppingBag, Search, FileDown, Trash2, Eye } from 'lucide-react';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { generateReceiptPDF } from '../../lib/pdf/generateReceiptPDF';
@@ -11,23 +11,32 @@ import { Sale } from '../../types';
 import { SaleDetailModal } from '../../components/shared/SaleDetailModal';
 import { consumeIntent } from '../../lib/navIntent';
 import { formatBRL } from '../../lib/labels';
+import { saleRevenue } from '../../lib/saleFinance';
+import { DeleteSaleModal } from '../../components/shared/DeleteSaleModal';
+import { DeletedSalesPanel } from './DeletedSalesPanel';
+import { SalesTrashPanel } from './SalesTrashPanel';
 
 export const SalesManagement: React.FC = () => {
-  const { currentTenant, currentUser, currentTheme } = useAuth();
+  const { currentTenant, currentUser, currentTheme, isSupportMode } = useAuth();
+  const isAdmin = currentUser.role === 'admin' || isSupportMode;
   const tenantId = currentTenant?.id || 'tenant-itech-01';
 
   const [searchTerm, setSearchTerm] = useState(
     () => String(consumeIntent('admin-sales', 'view-sale')?.saleNumber || '')
   );
-  const [cancelModalSale, setCancelModalSale] = useState<Sale | null>(null);
-  const [cancelReason, setCancelReason] = useState('');
+  const [deleteModalSale, setDeleteModalSale] = useState<Sale | null>(null);
+  const [view, setView] = useState<'list' | 'trash' | 'deleted'>('list');
+  const [trashSale, setTrashSale] = useState<Sale | null>(null);
+  const [trashError, setTrashError] = useState('');
+  const [flash, setFlash] = useState('');
+  const [, setTick] = useState(0);
 
   const [detailId, setDetailId] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<'all' | 'normal' | 'upgrade' | 'mine'>('all');
 
   // Um único histórico: vendas normais e upgrades (que são vendas com aparelho recebido)
   const sales = store.sales
-    .filter(s => s.tenant_id === tenantId)
+    .filter(s => s.tenant_id === tenantId && !s.deleted_at && !s.trashed_at)
     .sort((a, b) => b.sale_number - a.sale_number);
 
   const filteredSales = sales.filter(s => {
@@ -47,22 +56,6 @@ export const SalesManagement: React.FC = () => {
 
   const detailSale = sales.find(s => s.id === detailId);
 
-  const handleCancelSale = () => {
-    if (!cancelModalSale || !cancelReason.trim()) {
-      alert('Informe o motivo do cancelamento!');
-      return;
-    }
-
-    const result = store.cancelSale(cancelModalSale.id, tenantId, currentUser.id, cancelReason);
-    if (!result.ok) {
-      alert(result.error || 'Não foi possível cancelar a venda.');
-      return;
-    }
-    alert('Venda cancelada com sucesso! O estoque foi reestabelecido e a auditoria registrada.');
-    setCancelModalSale(null);
-    setCancelReason('');
-  };
-
   const handleDownloadPDF = (sale: Sale) => {
     if (!currentTenant) return;
     const cust = store.customers.find(c => c.id === sale.customer_id)?.name || 'Cliente';
@@ -79,11 +72,35 @@ export const SalesManagement: React.FC = () => {
             Histórico de Vendas
           </h2>
           <p className="text-xs text-slate-500 font-medium">
-            Todas as vendas, de onde vieram os clientes e os cancelamentos (o estoque volta automaticamente).
+            Todas as vendas e de onde vieram os clientes. Vendas lançadas por engano podem ser excluídas pelo administrador.
           </p>
         </div>
       </div>
 
+      {isAdmin && (
+        <div className="flex gap-2">
+          {([['list', 'Histórico'], ['trash', 'Lixeira'], ['deleted', 'Vendas Excluídas']] as const).map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setView(id)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${view === id ? 'btn-tenant-primary' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {flash && <p role="status" className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">{flash}</p>}
+
+      {view === 'trash' && isAdmin && (
+        <SalesTrashPanel tenantId={tenantId} userId={currentUser.id} onFeedback={text => { setFlash(text); setTick(t => t + 1); }} />
+      )}
+
+      {view === 'deleted' && isAdmin && (
+        <DeletedSalesPanel tenantId={tenantId} userId={currentUser.id} onChanged={() => setTick(t => t + 1)} />
+      )}
+
+      {view === 'list' && <>
       <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
         <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto order-2 sm:order-none">
           {([['all', 'Todas'], ['normal', 'Vendas normais'], ['upgrade', 'Upgrades'], ['mine', 'Minhas vendas']] as const).map(([id, label]) => (
@@ -163,7 +180,7 @@ export const SalesManagement: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 font-black text-slate-900 whitespace-nowrap">
-                      {formatBRL(Number(sale.total_amount))}
+                      {formatBRL(saleRevenue(sale))}
                     </td>
                     <td className="py-3.5 px-4 font-bold text-emerald-600 whitespace-nowrap">
                       {isCancelled ? '—' : `${formatBRL(Number(sale.gross_profit))}`}
@@ -196,13 +213,24 @@ export const SalesManagement: React.FC = () => {
                         <FileDown className="w-4 h-4 inline" />
                       </button>
 
-                      {!isCancelled && (
+                      {isAdmin && isCancelled && (
                         <button
-                          onClick={() => setCancelModalSale(sale)}
-                          title="Cancelar Venda"
+                          onClick={() => { setTrashError(''); setTrashSale(sale); }}
+                          title="Mover para a lixeira"
+                          aria-label={`Mover a venda ${sale.sale_number} para a lixeira`}
                           className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-600 transition-colors"
                         >
-                          <Ban className="w-4 h-4 inline" />
+                          <Trash2 className="w-4 h-4 inline" />
+                        </button>
+                      )}
+                      {!isCancelled && (isAdmin || sale.seller_id === currentUser.id) && (
+                        <button
+                          onClick={() => setDeleteModalSale(sale)}
+                          title="Excluir Venda"
+                          aria-label="Excluir Venda"
+                          className="p-1.5 hover:bg-rose-50 rounded-lg text-slate-400 hover:text-rose-600 transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4 inline" />
                         </button>
                       )}
                     </td>
@@ -222,64 +250,56 @@ export const SalesManagement: React.FC = () => {
       </div>
 
       {/* DETALHES COMPLETOS DA VENDA (INCLUI UPGRADE) */}
-      {detailSale && !cancelModalSale && (
+      {detailSale && !deleteModalSale && (
         <SaleDetailModal
           sale={detailSale}
           onClose={() => setDetailId(null)}
-          onCancel={() => setCancelModalSale(detailSale)}
+          onDelete={() => setDeleteModalSale(detailSale)}
         />
       )}
+      </>}
 
-      {/* MODAL DE CANCELAMENTO DE VENDA */}
-      {cancelModalSale && (
+      {trashSale && (
         <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl animate-fade-in">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
-              <h3 className="text-sm font-extrabold text-rose-600 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4" />
-                Cancelar Venda #{cancelModalSale.sale_number}
-              </h3>
-              <button onClick={() => setCancelModalSale(null)} className="text-slate-400 hover:text-slate-700">
-                <X className="w-4 h-4" />
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl animate-fade-in space-y-4" role="dialog" aria-label="Mover para a lixeira">
+            <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-2">
+              <Trash2 className="w-4 h-4 text-rose-600" /> Mover venda #{trashSale.sale_number} para a lixeira
+            </h3>
+            <p className="text-xs text-slate-600">Deseja mover esta venda para a lixeira? Ela deixará de aparecer no histórico principal.</p>
+            {trashError && <p role="alert" className="text-xs font-semibold text-rose-600">{trashError}</p>}
+            <div className="flex justify-end gap-3">
+              <button type="button" onClick={() => setTrashSale(null)} className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl">Cancelar</button>
+              <button
+                type="button"
+                onClick={() => {
+                  const r = store.moveSaleToTrash(trashSale.id, tenantId, currentUser.id);
+                  if (!r.ok) { setTrashError(r.error || 'Não foi possível mover para a lixeira.'); return; }
+                  setFlash(`Venda #${trashSale.sale_number} movida para a lixeira.`);
+                  setTrashSale(null);
+                  setDetailId(null);
+                }}
+                className="px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl shadow-md"
+              >
+                Mover para lixeira
               </button>
-            </div>
-
-            <p className="text-xs text-slate-600 mb-3">
-              Ao cancelar a venda, todos os aparelhos e acessórios retornarão automaticamente ao estoque da loja e o histórico será registrado na auditoria.
-            </p>
-
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs font-bold text-slate-700 block mb-1">Motivo do Cancelamento *</label>
-                <textarea
-                  rows={3}
-                  value={cancelReason}
-                  onChange={(e) => setCancelReason(e.target.value)}
-                  placeholder="Ex: Cliente desistiu da compra / Erro na forma de pagamento..."
-                  className="w-full text-xs p-3 rounded-xl border border-slate-200 focus:outline-none focus:border-rose-500"
-                  required
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-3">
-                <button
-                  type="button"
-                  onClick={() => setCancelModalSale(null)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl"
-                >
-                  Voltar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCancelSale}
-                  className="px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl shadow-md"
-                >
-                  Confirmar Cancelamento
-                </button>
-              </div>
             </div>
           </div>
         </div>
+      )}
+
+      {deleteModalSale && (
+        <DeleteSaleModal
+          sale={deleteModalSale}
+          tenantId={tenantId}
+          userId={currentUser.id}
+          restrictRefund={!isAdmin}
+          onClose={() => setDeleteModalSale(null)}
+          onDeleted={() => {
+            setFlash(`Venda #${deleteModalSale.sale_number} excluída. Os indicadores foram atualizados e o registro ficou em Vendas Excluídas.`);
+            setDeleteModalSale(null);
+            setDetailId(null);
+          }}
+        />
       )}
     </div>
   );

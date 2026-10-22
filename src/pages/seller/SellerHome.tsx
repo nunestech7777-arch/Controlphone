@@ -8,6 +8,7 @@ import { store } from '../../lib/store';
 import { computeSellerRanking, getMonthRange, getSellerGoal, toMonthKey } from '../../lib/sellerRanking';
 import { useAuth } from '../../context/AuthContext';
 import { formatBRL } from '../../lib/labels';
+import { saleRevenue } from '../../lib/saleFinance';
 
 export const SellerHome: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavigate }) => {
   const { currentTenant, currentUser, currentTheme } = useAuth();
@@ -165,7 +166,7 @@ export const SellerHome: React.FC<{ onNavigate: (v: string) => void }> = ({ onNa
 
                 <div className="text-right">
                   <div className="font-black text-slate-900 text-sm">
-                    {formatBRL(Number(sale.total_amount))}
+                    {formatBRL(saleRevenue(sale))}
                   </div>
                   <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
                     {sale.sales_origin}

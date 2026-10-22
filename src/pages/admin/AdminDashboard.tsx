@@ -13,6 +13,7 @@ import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { computeStockMetrics, formatBRL, pendingStockNote } from '../../lib/stockMetrics';
 import { salesByOrigin } from '../../lib/salesOrigins';
+import { periodFinance } from '../../lib/saleFinance';
 import { DASHBOARD_PERIODS, PERIOD_LABELS, PeriodKey, getPeriodRange, toInputDate } from '../../lib/sellerRanking';
 
 export const AdminDashboard: React.FC = () => {
@@ -60,6 +61,9 @@ export const AdminDashboard: React.FC = () => {
     const date = new Date(s.created_at);
     return date >= from && date <= to && (s.items || []).some(it => !it.returned_at);
   });
+
+  // Resumo financeiro do período: faturamento (com juros), juros da maquininha e lucro bruto (sem juros)
+  const finance = periodFinance(periodSales);
 
   // Origem das vendas (canal de atração): cada origem separada, com quantidade e faturamento.
   // "Instagram" e "Instagram Ads" são linhas diferentes (orgânico x anúncio pago), nunca somadas.
@@ -186,6 +190,31 @@ export const AdminDashboard: React.FC = () => {
           note={pendingStockNote(pendingDevices)}
         />
       </div>
+
+      {/* RESUMO FINANCEIRO DO PERÍODO (segue o filtro de período; não se mistura com o estoque acima) */}
+      <section aria-labelledby="period-finance-title" className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm">
+        <div className="flex flex-wrap items-baseline justify-between gap-2 mb-4">
+          <h3 id="period-finance-title" className="text-sm font-bold text-slate-800 tracking-wide">Resumo Financeiro do Período</h3>
+          <span className="text-[11px] font-semibold text-slate-400">{PERIOD_LABELS[period]}</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:divide-x divide-slate-100">
+          <div className="sm:pr-4">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Faturamento Realizado</span>
+            <span className="text-xl font-black text-slate-900 mt-1 block">{formatBRL(finance.revenue)}</span>
+            <p className="text-[10px] text-slate-500 mt-0.5">Tudo o que foi cobrado nas vendas, com os juros</p>
+          </div>
+          <div className="sm:px-4">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Juros da Maquininha</span>
+            <span className="text-xl font-black text-slate-900 mt-1 block">{formatBRL(finance.interest)}</span>
+            <p className="text-[10px] text-slate-500 mt-0.5">Cobrados dos clientes no crédito (não é a taxa da operadora)</p>
+          </div>
+          <div className="sm:pl-4">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">Lucro Bruto das Vendas</span>
+            <span className={`text-xl font-black mt-1 block ${finance.grossProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{formatBRL(finance.grossProfit)}</span>
+            <p className="text-[10px] text-slate-500 mt-0.5">Produtos vendidos menos custos acumulados, sem os juros</p>
+          </div>
+        </div>
+      </section>
 
       {/* ÁREA CENTRAL: Ranking (2/3) | Produtos Mais Vendidos + Origem das Vendas (1/3), com a mesma altura */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">

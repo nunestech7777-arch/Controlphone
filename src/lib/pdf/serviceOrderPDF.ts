@@ -67,9 +67,17 @@ function drawHeader(c: Ctx, title: string, number: string) {
   let nameX = LEFT;
   if (theme?.logo_url && theme.logo_url.startsWith('data:image')) {
     try {
+      const props = doc.getImageProperties(theme.logo_url);
+      const origW = props?.width || 1;
+      const origH = props?.height || 1;
+      const scale = Math.min(30 / origW, 12 / origH);
+      const renderW = Math.round(origW * scale * 100) / 100;
+      const renderH = Math.round(origH * scale * 100) / 100;
+      const offsetX = (30 - renderW) / 2;
+      const offsetY = (12 - renderH) / 2;
       doc.setFillColor(255, 255, 255);
       doc.roundedRect(LEFT, 7, 34, 16, 2, 2, 'F');
-      doc.addImage(theme.logo_url, 'PNG', LEFT + 2, 9, 30, 12);
+      doc.addImage(theme.logo_url, props?.fileType || 'PNG', LEFT + 2 + offsetX, 9 + offsetY, renderW, renderH);
       nameX = LEFT + 39;
     } catch { /* logo inválida: segue sem ela */ }
   }

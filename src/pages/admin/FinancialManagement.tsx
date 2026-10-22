@@ -10,6 +10,7 @@ import { store, toLocalDay } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Expense, ExpenseCategory, PaymentMethod } from '../../types';
 import { formatBRL } from '../../lib/labels';
+import { periodFinance } from '../../lib/saleFinance';
 
 type ExpenseFilter = 'all' | 'paid' | 'pending' | 'overdue';
 
@@ -78,10 +79,13 @@ export const FinancialManagement: React.FC = () => {
     (a, o) => a + Number(o.technician_parts_cost) + Number(o.technician_service_cost), 0
   );
 
-  // Cálculos DRE (somente despesas PAGAS entram no resultado)
-  const totalRevenue = sales.reduce((a, s) => a + Number(s.total_amount), 0) + serviceRevenue;
+  // Cálculos DRE (somente despesas PAGAS entram no resultado). O faturamento inclui os juros da maquininha
+  // cobrados no cartão, mas eles não são lucro dos produtos: saem antes do lucro das vendas.
+  const salesFinance = periodFinance(sales);
+  const cardInterest = salesFinance.interest;
+  const totalRevenue = salesFinance.revenue + serviceRevenue;
   const totalProductCost = sales.reduce((a, s) => a + Number(s.total_cost), 0) + serviceCost;
-  const grossProfit = totalRevenue - totalProductCost;
+  const grossProfit = totalRevenue - cardInterest - totalProductCost;
 
   const isOverdue = (e: Expense) => e.status === 'pending' && e.due_date < today;
   const totalPaidExpenses = expenses.filter(e => e.status === 'paid').reduce((a, e) => a + Number(e.amount), 0);
@@ -188,7 +192,9 @@ export const FinancialManagement: React.FC = () => {
           <span className="text-xl font-black text-slate-900 mt-1 block">
             {formatBRL(totalRevenue)}
           </span>
-          <p className="text-[10px] text-slate-500 mt-0.5">Vendas e serviços recebidos</p>
+          <p className="text-[10px] text-slate-500 mt-0.5">
+            Vendas e serviços recebidos{cardInterest > 0 ? ` (inclui ${formatBRL(cardInterest)} de juros da maquininha)` : ''}
+          </p>
         </div>
 
         <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
@@ -205,7 +211,8 @@ export const FinancialManagement: React.FC = () => {
             {formatBRL(grossProfit)}
           </span>
           <p className="text-[10px] text-slate-500 mt-0.5">
-            Margem: {totalRevenue > 0 ? ((grossProfit / totalRevenue) * 100).toFixed(1) : '0'}%
+            {cardInterest > 0 && <>Sem os juros da maquininha | </>}
+            Margem: {totalRevenue - cardInterest > 0 ? ((grossProfit / (totalRevenue - cardInterest)) * 100).toFixed(1) : '0'}%
           </p>
         </div>
 

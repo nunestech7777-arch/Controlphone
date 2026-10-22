@@ -7,6 +7,7 @@
 import { store } from '../store';
 import { Customer, PaymentMethod, Sale, ServiceOrder, Tenant, TenantTheme } from '../../types';
 import { TemplateValues } from '../tenantDocuments';
+import { saleRevenue } from '../saleFinance';
 
 const brl = (v?: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(v) || 0);
 const dateBR = (iso?: string) => {
@@ -90,7 +91,7 @@ export function saleTemplateValues(
     venda_itens: itemLines.join('\n'),
     venda_subtotal: brl(sale.subtotal),
     venda_desconto: brl(sale.discount_amount),
-    venda_total: brl(sale.total_amount),
+    venda_total: brl(saleRevenue(sale)), // tudo o que foi cobrado (inclui juros da maquininha)
     venda_pagamento: (sale.payments || [])
       .map(p => `${PAYMENT_LABELS[p.payment_method] || p.payment_method}${p.installments > 1 ? ` ${p.installments}x` : ''}: ${brl(p.amount)}`)
       .join(' | '),

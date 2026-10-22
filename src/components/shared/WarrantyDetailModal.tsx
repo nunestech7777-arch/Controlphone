@@ -8,6 +8,7 @@ import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Warranty } from '../../types';
 import { navigateTo } from '../../lib/navIntent';
+import { InspectionSummary } from './InspectionSummary';
 import {
   CDC_NOTICE,
   WARRANTY_STATUS_META,
@@ -129,6 +130,8 @@ export const WarrantyDetailModal: React.FC<WarrantyDetailModalProps> = ({ warran
               <p className="text-[11px] font-semibold text-rose-600 mt-1">Cancelamento: {warranty.cancel_reason}</p>
             )}
           </div>
+
+          {warranty.inspection && <InspectionSummary inspection={warranty.inspection} />}
 
           {(replaces || replacedBy) && (
             <div className={boxCls}>

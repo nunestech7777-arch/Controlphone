@@ -9,6 +9,7 @@ import { store } from '../../lib/store';
 import { Customer } from '../../types';
 import { WarrantyDetailModal } from '../../components/shared/WarrantyDetailModal';
 import { WARRANTY_STATUS_META, formatDay, getWarrantyStatus } from '../../lib/warrantyStatus';
+import { saleRevenue } from '../../lib/saleFinance';
 
 type Tab = 'data' | 'warranties' | 'history';
 
@@ -38,7 +39,7 @@ export const CustomerProfileModal: React.FC<{ customer: Customer; onClose: () =>
   ];
 
   const sales = store.sales
-    .filter(s => s.tenant_id === tenantId && s.customer_id === customer.id)
+    .filter(s => s.tenant_id === tenantId && s.customer_id === customer.id && !s.deleted_at && !s.trashed_at)
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
   const orders = store.serviceOrders.filter(o => o.tenant_id === tenantId && o.customer_id === customer.id);
   const returns = store.returnRequests.filter(r => r.tenant_id === tenantId && r.customer_id === customer.id);
@@ -176,7 +177,7 @@ export const CustomerProfileModal: React.FC<{ customer: Customer; onClose: () =>
                   <li key={s.id} className="rounded-xl border border-slate-200 p-2.5">
                     <div className="flex justify-between gap-2 font-semibold text-slate-800">
                       <span>Venda #{s.sale_number} — {formatDay(s.created_at)}{s.status === 'cancelled' && ' (cancelada)'}</span>
-                      <span>{formatBRL(s.total_amount)}</span>
+                      <span>{formatBRL(saleRevenue(s))}</span>
                     </div>
                     <div className="text-[11px] text-slate-500">
                       {(s.items || []).map(it =>

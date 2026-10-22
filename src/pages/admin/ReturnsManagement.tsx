@@ -12,6 +12,7 @@ import { consumeIntent } from '../../lib/navIntent';
 import { PaymentMethod, ReturnRequest, ReturnResolution, ReturnStatus, Sale } from '../../types';
 import { PERIOD_LABELS, PeriodKey, getPeriodRange } from '../../lib/sellerRanking';
 import { formatDay } from '../../lib/warrantyStatus';
+import { saleRevenue } from '../../lib/saleFinance';
 
 const STATUS_META: Record<ReturnStatus, { label: string; cls: string }> = {
   open: { label: 'Solicitação aberta', cls: 'bg-slate-100 text-slate-700 border-slate-200' },
@@ -359,7 +360,7 @@ export const ReturnsManagement: React.FC<{ viewId?: string }> = ({ viewId = 'adm
                       <button type="button" onClick={() => { setPickedSaleId(s.id); setPickedItemId(''); }} className="w-full text-left px-3 py-2 hover:bg-slate-50">
                         <span className="font-bold text-slate-800">Venda #{s.sale_number}</span>
                         <span className="text-slate-500"> — {customerName(s.customer_id)}</span>
-                        <span className="block text-[11px] text-slate-400">{formatDay(s.created_at)} | {formatBRL(s.total_amount)}</span>
+                        <span className="block text-[11px] text-slate-400">{formatDay(s.created_at)} | {formatBRL(saleRevenue(s))}</span>
                       </button>
                     </li>
                   ))}
@@ -375,7 +376,7 @@ export const ReturnsManagement: React.FC<{ viewId?: string }> = ({ viewId = 'adm
                 <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 grid grid-cols-2 gap-x-3 gap-y-1 text-slate-600">
                   <span className="col-span-2 font-bold text-slate-800">Venda #{pickedSale.sale_number} — {customerName(pickedSale.customer_id)}</span>
                   <span>Compra: <b className="text-slate-800">{formatDay(pickedSale.created_at)}</b></span>
-                  <span>Total pago: <b className="text-slate-800">{formatBRL(pickedSale.total_amount)}</b></span>
+                  <span>Total pago: <b className="text-slate-800">{formatBRL(saleRevenue(pickedSale))}</b></span>
                   <span>Pagamento: <b className="text-slate-800">{(pickedSale.payments || []).map(p => PAYMENT_LABELS[p.payment_method] || p.payment_method).join(', ') || '—'}</b></span>
                   <span>Vendedor: <b className="text-slate-800">{store.profiles.find(p => p.id === pickedSale.seller_id)?.full_name || '—'}</b></span>
                 </div>

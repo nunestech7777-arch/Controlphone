@@ -9,6 +9,7 @@ import { loadRealIdentity } from '../../src/lib/realSession';
 import { syncTenantRecords } from '../../src/lib/realData';
 import { salesByOrigin, isPaidOrigin } from '../../src/lib/salesOrigins';
 import { apagarDocumentosDoTeste, avisoHistorico } from './limpeza';
+import { vistoriaCompleta } from './vistoria';
 import { Device } from '../../src/types';
 
 let pass = 0, failN = 0;
@@ -61,7 +62,7 @@ check('vendedor recebe a origem do cliente', ok && store.customers.find(c => c.i
 const plan: [string, number][] = [['Instagram', 2000], ['Instagram Ads', 2500], ['Instagram Ads', 3000], ['WhatsApp', 2200], ['WhatsApp Ads', 2400], ['Passou em frente à loja', 1800]];
 const saleIds = plan.map(([origin, price], i) => store.finalizeSale({
   tenantId: T, sellerId: me.id, customerId: cust.id, salesOrigin: origin, subtotal: 0, discountAmount: 0, totalAmount: 0, totalCost: 0,
-  items: [{ itemType: 'device', deviceId: devices[i].id, quantity: 1, unitCost: 0, unitPrice: price, discount: 0, totalPrice: 0 }],
+  items: [{ itemType: 'device', deviceId: devices[i].id, quantity: 1, unitCost: 0, unitPrice: price, discount: 0, totalPrice: 0, inspection: vistoriaCompleta() }],
   payments: [{ paymentMethod: 'pix', amount: price, installments: 1 }], gifts: []
 }).id);
 check('vendas enviadas ao banco', await flush() && !store.hasUnsynced, errs());

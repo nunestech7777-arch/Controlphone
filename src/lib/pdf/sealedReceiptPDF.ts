@@ -7,9 +7,11 @@
 
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { drawProportionalLogo } from './pdfLogo';
 import { Customer, Sale, SaleItem, Tenant, TenantTheme } from '../../types';
 import { store } from '../store';
 import { PAYMENT_METHOD_LABELS, formatBRL as brl } from '../labels';
+import { saleInterest, saleRevenue } from '../saleFinance';
 
 /** Avisos obrigatórios no rodapé do comprovante de lacrado (não editáveis pela loja). */
 export const SEALED_RECEIPT_NOTICES = [
@@ -51,19 +53,25 @@ export function buildSealedReceiptPDF(input: SealedReceiptInput): { doc: jsPDF; 
   const pageHeight = doc.internal.pageSize.getHeight();
 
   // ---- Loja
-  let y = 18;
-  if (theme?.logo_url && theme.logo_url.startsWith('data:image')) {
-    try {
-      doc.addImage(theme.logo_url, 'PNG', 14, 10, 38, 14);
-      y = 30;
-    } catch {
-      // logotipo em formato não suportado: segue só com o nome
-    }
+  const { rendered, nextY: yLoja } = drawProportionalLogo(doc, theme?.logo_url, {
+    x: 14,
+    y: 10,
+    maxWidth: 48,
+    maxHeight: 24,
+    spacingAfter: 5,
+    defaultY: 18
+  });
+  let y = yLoja;
+
+  // Se não houver logo cadastrada, exibe o nome da loja em texto em destaque
+  if (!rendered) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    doc.setTextColor(primary[0], primary[1], primary[2]);
+    doc.text(storeName.toUpperCase(), 14, y);
+    y += 6;
   }
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(15);
-  doc.setTextColor(primary[0], primary[1], primary[2]);
-  doc.text(storeName.toUpperCase(), 14, y);
+
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(100, 116, 139);
@@ -78,10 +86,11 @@ export function buildSealedReceiptPDF(input: SealedReceiptInput): { doc: jsPDF; 
     `Endereço: ${[street, city].filter(Boolean).join(' - ') || 'Não informado'}`,
     `Telefone: ${tenant.phone || 'Não informado'}`
   ].filter(Boolean);
-  doc.text(storeLines, 14, y + 6);
-  y += 6 + storeLines.length * 4;
+  doc.text(storeLines, 14, y);
+  y += storeLines.length * 4;
   doc.setDrawColor(226, 232, 240);
-  doc.line(14, y, 196, y);
+  doc.line(14, y + 2, 196, y + 2);
+  y += 2;
 
   // ---- Venda
   y += 8;
@@ -156,29 +165,32 @@ export function buildSealedReceiptPDF(input: SealedReceiptInput): { doc: jsPDF; 
   const total = items.reduce((acc, i) => acc + Number(i.total_price), 0);
   const tradeCredit = (sale.payments || []).filter(p => p.payment_method === 'trade_in_credit').reduce((acc, p) => acc + Number(p.amount), 0);
   const wholeSale = Math.abs(total - Number(sale.total_amount)) < 0.005;
+  const interest = saleInterest(sale);
 
   doc.setFontSize(9);
   doc.setTextColor(30, 41, 59);
   const money: string[] = [`Valor do aparelho: ${brl(value)}`];
   if (discount > 0) money.push(`Desconto: - ${brl(discount)}`);
+  // juros da maquininha: cobrados na venda inteira (no comprovante só desta parte, não entram)
+  if (interest > 0 && wholeSale) money.push(`Valor dos produtos: ${brl(total)}`, `Juros da maquininha: ${brl(interest)}`);
   if (tradeCredit > 0 && wholeSale) money.push(`Aparelho recebido no upgrade: - ${brl(tradeCredit)}`);
   doc.setFont('helvetica', 'normal');
   doc.text(money, 120, y);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(primary[0], primary[1], primary[2]);
-  const paid = wholeSale ? Number(sale.total_amount) - tradeCredit : total;
+  const paid = wholeSale ? saleRevenue(sale) - tradeCredit : total;
   doc.text(`VALOR TOTAL PAGO: ${brl(paid)}`, 120, y + money.length * 4.6 + 3);
   if (!wholeSale) {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.8);
     doc.setTextColor(100, 116, 139);
-    doc.text(`Total da venda nº ${sale.sale_number}, com os demais itens: ${brl(Number(sale.total_amount))}`, 120, y + money.length * 4.6 + 8);
+    doc.text(`Total da venda nº ${sale.sale_number}, com os demais itens${interest > 0 ? ' e os juros da maquininha' : ''}: ${brl(saleRevenue(sale))}`, 120, y + money.length * 4.6 + 8);
   }
 
   const payments = (sale.payments || [])
     .filter(p => p.payment_method !== 'trade_in_credit')
-    .map(p => `${PAYMENT_METHOD_LABELS[p.payment_method] || p.payment_method}${p.installments > 1 ? ` (${p.installments}x)` : ''}: ${brl(Number(p.amount))}`);
+    .map(p => `${PAYMENT_METHOD_LABELS[p.payment_method] || p.payment_method}${p.installments > 1 ? ` (${p.installments}x)` : ''}: ${brl(Number(p.amount))}${Number(p.interest) > 0 ? ` (inclui ${brl(Number(p.interest))} de juros)` : ''}`);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(71, 85, 105);

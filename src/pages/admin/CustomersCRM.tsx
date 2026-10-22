@@ -12,6 +12,7 @@ import { consumeIntent } from '../../lib/navIntent';
 import { isValidCPF, maskCPF, maskPhone } from '../../lib/tenantSetup';
 import { formatBRL } from '../../lib/labels';
 import { SALES_ORIGINS } from '../../lib/salesOrigins';
+import { saleRevenue } from '../../lib/saleFinance';
 
 export const CustomersCRM: React.FC = () => {
   const { currentTenant, currentUser } = useAuth();
@@ -182,7 +183,7 @@ export const CustomersCRM: React.FC = () => {
               {filteredCustomers.map((cust) => {
                 const totalSpent = store.sales
                   .filter(s => s.customer_id === cust.id && s.status === 'completed')
-                  .reduce((acc, s) => acc + Number(s.total_amount), 0);
+                  .reduce((acc, s) => acc + saleRevenue(s), 0);
 
                 return (
                   <tr

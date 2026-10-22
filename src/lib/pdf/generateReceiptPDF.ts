@@ -4,11 +4,13 @@
 
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { drawProportionalLogo } from './pdfLogo';
 import { Sale, SaleItem, Tenant, TenantTheme } from '../../types';
 import { store } from '../store';
 import { formatDay, CDC_NOTICE } from '../warrantyStatus';
 import { PAYMENT_METHOD_LABELS, formatBRL as brl } from '../labels';
 import { soldDeviceInfo } from './sealedReceiptPDF';
+import { saleInterest, saleRevenue } from '../saleFinance';
 
 function hexToRgb(hex: string): [number, number, number] {
   const clean = hex.replace('#', '');
@@ -45,37 +47,40 @@ export const buildReceiptPDF = (
   const primaryRgb = hexToRgb(theme?.primary_color || '#1845E8');
   const storeName = theme?.display_name || tenant.trade_name;
 
-  let headerY = 20;
+  // Se tiver logo configurada, posiciona proporcionalmente
+  const { rendered, nextY: logoNextY } = drawProportionalLogo(doc, theme?.logo_url, {
+    x: 14,
+    y: 10,
+    maxWidth: 48,
+    maxHeight: 24,
+    spacingAfter: 5,
+    defaultY: 20
+  });
 
-  // Se tiver logo configurada
-  if (theme?.logo_url && theme.logo_url.startsWith('data:image')) {
-    try {
-      doc.addImage(theme.logo_url, 'PNG', 14, 12, 38, 14);
-      headerY = 32;
-    } catch (e) {
-      console.warn('Erro ao carregar logo no PDF:', e);
-    }
+  let headerY = logoNextY;
+
+  // Se não houver logo configurada, exibe o nome da loja em texto em destaque
+  if (!rendered) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    doc.setTextColor(primaryRgb[0], primaryRgb[1], primaryRgb[2]);
+    doc.text(storeName.toUpperCase(), 14, headerY);
+    headerY += 6;
   }
-
-  // Nome da loja em destaque (sem menção a Controlphone)
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(15);
-  doc.setTextColor(primaryRgb[0], primaryRgb[1], primaryRgb[2]);
-  doc.text(storeName.toUpperCase(), 14, headerY);
 
   doc.setFontSize(8.5);
   doc.setTextColor(100, 116, 139);
   doc.setFont('helvetica', 'normal');
-  doc.text(`CNPJ: ${tenant.cnpj || 'Não informado'} | Tel: ${tenant.phone}`, 14, headerY + 6);
+  doc.text(`CNPJ: ${tenant.cnpj || 'Não informado'} | Tel: ${tenant.phone}`, 14, headerY);
   const street = [tenant.address_street, tenant.address_number].filter(Boolean).join(', ');
   const city = [tenant.address_city, tenant.address_state].filter(Boolean).join('/');
-  doc.text(`Endereço: ${[street, city].filter(Boolean).join(' - ') || 'Não informado'}`, 14, headerY + 11);
+  doc.text(`Endereço: ${[street, city].filter(Boolean).join(' - ') || 'Não informado'}`, 14, headerY + 5);
 
   doc.setDrawColor(226, 232, 240);
-  doc.line(14, headerY + 15, 196, headerY + 15);
+  doc.line(14, headerY + 9, 196, headerY + 9);
 
   // Título do Documento
-  const startInfoY = headerY + 22;
+  const startInfoY = headerY + 16;
   doc.setFontSize(11);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(15, 23, 42);
@@ -161,38 +166,50 @@ export const buildReceiptPDF = (
     finalY += 6;
   }
 
-  // Totais e Pagamentos
+  // Totais e Pagamentos (sem custos, lucros ou margens)
+  const interest = saleInterest(sale);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9.5);
   doc.setTextColor(30, 41, 59);
-  doc.text(`Subtotal: ${brl(Number(sale.subtotal))}`, 130, finalY);
+  let rightY = finalY;
+  doc.text(`Subtotal: ${brl(Number(sale.subtotal))}`, 130, rightY);
   if (Number(sale.discount_amount) > 0) {
-    doc.text(`Desconto: - ${brl(Number(sale.discount_amount))}`, 130, finalY + 5);
+    rightY += 5;
+    doc.text(`Desconto: - ${brl(Number(sale.discount_amount))}`, 130, rightY);
+  }
+  // Cartão de crédito com juros: produtos e juros da maquininha aparecem separados
+  if (interest > 0) {
+    rightY += 5;
+    doc.text(`Valor dos produtos: ${brl(Number(sale.total_amount))}`, 130, rightY);
+    rightY += 5;
+    doc.text(`Juros da maquininha: ${brl(interest)}`, 130, rightY);
   }
   // Upgrade: o aparelho recebido entra como parte do pagamento (aparece como abatimento)
   const tradeCredit = (sale.payments || [])
     .filter(p => p.payment_method === 'trade_in_credit')
     .reduce((acc, p) => acc + Number(p.amount), 0);
-  let totalLineY = finalY + 12;
   if (tradeCredit > 0) {
     const received = store.tradeIns.find(t => t.id === sale.trade_in_id);
     const receivedDev = store.devices.find(d => d.id === received?.received_device_id);
     doc.setFontSize(8.5);
+    rightY += 5;
     doc.text(
       `Aparelho recebido${receivedDev ? ` (${receivedDev.model}, IMEI ${receivedDev.imei})` : ''}: - ${brl(tradeCredit)}`,
-      130, finalY + 10, { maxWidth: 66 }
+      130, rightY, { maxWidth: 66 }
     );
-    totalLineY = finalY + 20;
+    rightY += 5;
   }
-  const amountPaid = Number(sale.total_amount) - tradeCredit;
+  // o total pago é exatamente o que foi cobrado do cliente (inclui os juros do cartão)
+  const amountPaid = saleRevenue(sale) - tradeCredit;
+  rightY += 7;
   doc.setTextColor(primaryRgb[0], primaryRgb[1], primaryRgb[2]);
   doc.setFontSize(11);
-  doc.text(`TOTAL PAGO: ${brl(amountPaid)}`, 130, totalLineY);
+  doc.text(`${interest > 0 ? 'VALOR TOTAL PAGO' : 'TOTAL PAGO'}: ${brl(amountPaid)}`, 130, rightY);
 
   // Formas de pagamento (o aparelho recebido no upgrade já aparece acima como abatimento)
   const paymentLines = (sale.payments || [])
     .filter(p => p.payment_method !== 'trade_in_credit')
-    .map(p => `${PAYMENT_METHOD_LABELS[p.payment_method] || p.payment_method}${p.installments > 1 ? ` (${p.installments}x)` : ''}: ${brl(Number(p.amount))}`);
+    .map(p => `${PAYMENT_METHOD_LABELS[p.payment_method] || p.payment_method}${p.installments > 1 ? ` (${p.installments}x)` : ''}: ${brl(Number(p.amount))}${Number(p.interest) > 0 ? ` (inclui ${brl(Number(p.interest))} de juros)` : ''}`);
   if (paymentLines.length > 0) {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
@@ -203,7 +220,7 @@ export const buildReceiptPDF = (
   const paymentBlockEnd = finalY + (paymentLines.length + 1) * 4;
 
   // GARANTIA COMERCIAL INDIVIDUAL DE CADA APARELHO (sem custos, lucros ou margens)
-  const afterTotals = Math.max(finalY + (tradeCredit > 0 ? 28 : 20), paymentBlockEnd + 4);
+  const afterTotals = Math.max(rightY + 8, paymentBlockEnd + 4);
   let footerY = afterTotals + 8;
   // só as garantias dos aparelhos listados neste comprovante (lacrado não tem a garantia comercial de seminovo)
   const listedIds = new Set(listed.map(i => i.id));

@@ -7,6 +7,8 @@
 
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { drawProportionalLogo } from './pdfLogo';
+import { INSPECTION_ITEMS } from '../deviceInspection';
 import { Customer, Device, Sale, SaleItem, Tenant, TenantTheme, Warranty } from '../../types';
 
 export interface WarrantyTermEntry {
@@ -84,6 +86,7 @@ const EXCLUSIONS: [string, string][] = [
   ['(l)', 'Alteração no Software Original de Fábrica do produto através de instalação de Software ou Sistema Operacional não oficial.']
 ];
 
+// Quadro das vendas anteriores à vistoria no sistema (em branco, preenchido à mão): mantido como era
 const INSPECTION_ROWS = [
   'A câmera frontal esta em perfeito funcionamento?',
   'A câmera traseira esta em perfeito funcionamento?',
@@ -195,10 +198,14 @@ function drawTerm(doc: jsPDF, ctx: WarrantyTermContext, entry: WarrantyTermEntry
 
   doc.setTextColor(20, 20, 20);
 
-  // Cabeçalho: logo (quando houver), título e identificação da venda
-  if (theme?.logo_url && theme.logo_url.startsWith('data:image')) {
-    try { doc.addImage(theme.logo_url, 'PNG', LEFT, 12, 32, 12); } catch { /* logo inválida: segue sem ela */ }
-  }
+  // Cabeçalho: logo proporcional (quando houver), título e identificação da venda
+  drawProportionalLogo(doc, theme?.logo_url, {
+    x: LEFT,
+    y: 11,
+    maxWidth: 34,
+    maxHeight: 13,
+    defaultY: 11
+  });
   doc.setFont(FONT, 'bold');
   doc.setFontSize(12.5);
   doc.text('TERMO DE GARANTIA', PAGE_W / 2, 26, { align: 'center' });
@@ -277,7 +284,8 @@ function drawTerm(doc: jsPDF, ctx: WarrantyTermContext, entry: WarrantyTermEntry
     });
   });
 
-  // 4) VISTORIA
+  // 4) VISTORIA — com a vistoria feita pelo vendedor na venda, o X sai na coluna escolhida
+  const inspection = item.inspection || warranty?.inspection;
   if (y > BOTTOM_LIMIT - 70) y = pageBreak();
   y += 6;
   doc.setFont(FONT, 'bold');
@@ -291,18 +299,27 @@ function drawTerm(doc: jsPDF, ctx: WarrantyTermContext, entry: WarrantyTermEntry
     startY: y + 4,
     margin: { left: BODY_X, right: RIGHT + 14 },
     head: [['SIM', 'NÃO', 'DESCRIÇÃO']],
-    body: INSPECTION_ROWS.map(row => ['', '', row]),
+    body: inspection
+      ? INSPECTION_ITEMS.map(({ key, label }) => [
+          inspection.answers[key] === true ? 'X' : '',
+          inspection.answers[key] === false ? 'X' : '',
+          label
+        ])
+      : INSPECTION_ROWS.map(row => ['', '', row]),
     theme: 'grid',
     styles: { font: FONT, fontSize: 9.5, cellPadding: 1.1, textColor: [20, 20, 20], lineColor: [40, 40, 40], lineWidth: 0.2 },
     headStyles: { fillColor: [255, 255, 255], textColor: [20, 20, 20], fontStyle: 'bold', halign: 'center' },
-    columnStyles: { 0: { cellWidth: 13 }, 1: { cellWidth: 13 } }
+    columnStyles: {
+      0: { cellWidth: 13, halign: 'center', fontStyle: 'bold' },
+      1: { cellWidth: 13, halign: 'center', fontStyle: 'bold' }
+    }
   });
   y = (doc as any).lastAutoTable.finalY + 6;
 
-  // OBS: já vem com as Observações do aparelho cadastradas no sistema, quando existirem
+  // OBS: observações da vistoria; nas vendas anteriores a ela, as Observações do cadastro do aparelho
   doc.setFont(FONT, 'normal');
   doc.setFontSize(SIZE);
-  const obs = device.physical_condition_notes?.trim();
+  const obs = inspection ? inspection.notes?.trim() : device.physical_condition_notes?.trim();
   const obsLines: string[] = obs ? doc.splitTextToSize(obs, right - 14 - (BODY_X + 12)).slice(0, 2) : [];
   field(doc, 'OBS:', obsLines[0], BODY_X, y, right - 14);
   y += 5.2;
