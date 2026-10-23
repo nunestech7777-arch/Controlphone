@@ -126,7 +126,7 @@ check('seminovo: Termo de Garantia + Comprovante de Venda — Seminovo; nada de 
   d.labels.includes('Termo de Garantia') && d.labels.includes('Comprovante de Venda — Seminovo') && !d.labels.some(l => l.startsWith('Comprovante de Venda — Lacrado')) && d.auto.join() === 'warranty-term', d.labels.join(', '));
 d = docsOf(s2);
 check('lacrado: só o Comprovante de Venda — Lacrado (sem Termo de Garantia de seminovo), baixado automaticamente',
-  d.labels.some(l => l.startsWith('Comprovante de Venda — Lacrado')) && !d.labels.includes('Termo de Garantia') && !d.labels.some(l => l.startsWith('Comprovante da Venda') || l.endsWith('Seminovo')) && d.auto.join() === 'receipt-sealed', d.labels.join(', '));
+  d.labels.some(l => l.startsWith('Comprovante de Venda — Lacrado')) && !d.labels.includes('Termo de Garantia') && !d.labels.some(l => l.startsWith('Comprovante da Venda') || l.endsWith('Seminovo')) && d.auto.filter(id => id !== 'apple-warranty').join() === 'receipt-sealed', d.labels.join(', '));
 const lacText = pdfText(s2, 'receipt-sealed');
 check('comprovante de lacrado: aparelho, IMEI, tipo LACRADO, cliente com CPF e valor', lacText.includes(lac1.imei) && lacText.includes('LACRADO') && lacText.includes('123.456.789-00') && lacText.includes('5.000,00'));
 check('comprovante de lacrado: texto da garantia do fabricante', has(lacText, FABRICANTE), lacText.slice(-600));

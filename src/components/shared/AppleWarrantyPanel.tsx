@@ -67,7 +67,7 @@ export const AppleWarrantyPanel: React.FC<Props> = ({ devices, customerName, sel
       </div>
 
       <p className="text-slate-600">
-        Aparelho Apple novo e lacrado: o cliente recebe a <strong>{term.title} — {term.subtitle}</strong>. O termo completo sai no mesmo PDF do comprovante.
+        Aparelho Apple novo e lacrado: o cliente recebe a <strong>{term.title} — {term.subtitle}</strong>. O termo completo sai em um PDF próprio, junto com o comprovante.
       </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-xl bg-slate-50 border border-slate-100 p-3">

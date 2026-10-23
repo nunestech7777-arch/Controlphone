@@ -3732,7 +3732,7 @@ class ControlphoneStore {
         term_id: APPLE_WARRANTY_TERM_ID,
         version: APPLE_WARRANTY_CURRENT.version,
         title: `${APPLE_WARRANTY_CURRENT.title} — ${APPLE_WARRANTY_CURRENT.subtitle}`,
-        document: 'receipt-sealed',
+        document: 'apple-warranty',
         sale_item_ids: apple.map(i => i.id),
         presented_at: at,
         presented_by: userId,

@@ -3,10 +3,12 @@
 // ============================================================================
 
 import React, { useState } from 'react';
-import { ShoppingBag, FileDown, Eye } from 'lucide-react';
+import { ShoppingBag, FileDown, Eye, ShieldCheck } from 'lucide-react';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { generateReceiptPDF } from '../../lib/pdf/generateReceiptPDF';
+import { appleWarrantyDocumentFor, getSaleContext, receiptDocumentFor, runDocumentAction } from '../../lib/pdf/saleDocuments';
+import { saleHasAppleWarranty } from '../../lib/pdf/appleWarrantyPDF';
 import { Sale } from '../../types';
 import { SaleDetailModal } from '../../components/shared/SaleDetailModal';
 import { formatBRL } from '../../lib/labels';
@@ -27,8 +29,22 @@ export const SellerMySales: React.FC = () => {
 
   const handleDownloadPDF = (sale: Sale) => {
     if (!currentTenant) return;
+    // iPhone lacrado: só o comprovante (o termo Apple tem o botão próprio, "Baixar Garantia")
+    if (saleHasAppleWarranty(sale)) {
+      const ctx = getSaleContext(sale, currentTenant, currentTheme);
+      const def = receiptDocumentFor(ctx);
+      if (def) void runDocumentAction(def, ctx, 'download');
+      return;
+    }
     const cust = store.customers.find(c => c.id === sale.customer_id)?.name || 'Cliente';
     generateReceiptPDF(sale, currentTenant, currentUser.full_name, cust, currentTheme);
+  };
+
+  const handleDownloadWarranty = (sale: Sale) => {
+    if (!currentTenant) return;
+    const ctx = getSaleContext(sale, currentTenant, currentTheme);
+    const def = appleWarrantyDocumentFor(ctx);
+    if (def) void runDocumentAction(def, ctx, 'download');
   };
 
   return (
@@ -106,6 +122,15 @@ export const SellerMySales: React.FC = () => {
                         <FileDown className="w-3.5 h-3.5" />
                         Baixar Comprovante
                       </button>
+                      {saleHasAppleWarranty(sale) && (
+                        <button
+                          onClick={() => handleDownloadWarranty(sale)}
+                          className="ml-1 mt-1 sm:mt-0 px-2.5 py-1 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-[11px] inline-flex items-center gap-1.5"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          Baixar Garantia
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );

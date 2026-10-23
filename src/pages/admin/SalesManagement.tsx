@@ -3,10 +3,12 @@
 // ============================================================================
 
 import React, { useState } from 'react';
-import { ShoppingBag, Search, FileDown, Trash2, Eye } from 'lucide-react';
+import { ShoppingBag, Search, FileDown, Trash2, Eye, ShieldCheck } from 'lucide-react';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { generateReceiptPDF } from '../../lib/pdf/generateReceiptPDF';
+import { appleWarrantyDocumentFor, getSaleContext, receiptDocumentFor, runDocumentAction } from '../../lib/pdf/saleDocuments';
+import { saleHasAppleWarranty } from '../../lib/pdf/appleWarrantyPDF';
 import { Sale } from '../../types';
 import { SaleDetailModal } from '../../components/shared/SaleDetailModal';
 import { consumeIntent } from '../../lib/navIntent';
@@ -58,9 +60,23 @@ export const SalesManagement: React.FC = () => {
 
   const handleDownloadPDF = (sale: Sale) => {
     if (!currentTenant) return;
+    // iPhone lacrado: só o comprovante (o termo Apple tem o botão próprio, "Baixar Garantia")
+    if (saleHasAppleWarranty(sale)) {
+      const ctx = getSaleContext(sale, currentTenant, currentTheme);
+      const def = receiptDocumentFor(ctx);
+      if (def) void runDocumentAction(def, ctx, 'download');
+      return;
+    }
     const cust = store.customers.find(c => c.id === sale.customer_id)?.name || 'Cliente';
     const seller = store.profiles.find(p => p.id === sale.seller_id)?.full_name || 'Vendedor';
     generateReceiptPDF(sale, currentTenant, seller, cust, currentTheme);
+  };
+
+  const handleDownloadWarranty = (sale: Sale) => {
+    if (!currentTenant) return;
+    const ctx = getSaleContext(sale, currentTenant, currentTheme);
+    const def = appleWarrantyDocumentFor(ctx);
+    if (def) void runDocumentAction(def, ctx, 'download');
   };
 
   return (
@@ -207,11 +223,22 @@ export const SalesManagement: React.FC = () => {
                       </button>
                       <button
                         onClick={() => handleDownloadPDF(sale)}
-                        title="Baixar Comprovante PDF"
+                        title="Baixar Comprovante"
+                        aria-label="Baixar Comprovante"
                         className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 hover:text-blue-600 transition-colors"
                       >
                         <FileDown className="w-4 h-4 inline" />
                       </button>
+                      {saleHasAppleWarranty(sale) && (
+                        <button
+                          onClick={() => handleDownloadWarranty(sale)}
+                          title="Baixar Garantia"
+                          aria-label="Baixar Garantia"
+                          className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 hover:text-blue-600 transition-colors"
+                        >
+                          <ShieldCheck className="w-4 h-4 inline" />
+                        </button>
+                      )}
 
                       {isAdmin && isCancelled && (
                         <button

@@ -19,7 +19,7 @@ Testes que exercitam o motor de dados do app (`src/lib/store.ts`) fora do navega
 | `banco-editar-acessorio.ts` | Edição de acessório e brinde (quantidade, custo, preço e fornecedor) e correção da compra no fornecedor | Sim |
 | `banco-vistoria.ts` | Vistoria do seminovo na venda: obrigatória no seminovo, ausente no lacrado, gravada com o IMEI e marcada com X no Termo de Garantia | Sim |
 | `banco-cadastro-lote.ts` | Cadastro em lote: um registro por IMEI, custo individual, tudo ou nada, IMEI repetido, reenvio sem duplicar, colar IMEIs, venda de 1 unidade, sem grade (**exige a migration 25**) | Sim |
-| `banco-garantia-apple.ts` | Termo de Garantia Apple (1 ano) do lacrado: registro na venda (versão e ciência), PDF único com comprovante + texto integral conferido parágrafo a parágrafo, seminovo e outras marcas sem o termo | Sim |
+| `banco-garantia-apple.ts` | Termo de Garantia Apple (1 ano) do lacrado: registro na venda (versão e ciência), dois PDFs separados (comprovante sem o termo; termo com o texto integral conferido parágrafo a parágrafo), botões Baixar Comprovante/Baixar Garantia, venda antiga recuperável, seminovo e outras marcas sem o termo | Sim |
 | `banco-lixeira.ts` | Lixeira de vendas canceladas: mover, restaurar (continua cancelada), excluir definitivamente, sem mexer em estoque/financeiro/metas, auditoria e proteção no banco (**exige a migration 26**) | Sim |
 | `banco-exclusao-venda.ts` | Excluir Venda (exclusão lógica): indicadores, estoque por situação do aparelho, estorno, garantia, auditoria e proteção no banco (**exige a migration 24**) | Sim |
 | `banco-juros.ts` | Juros da maquininha no crédito: faturamento com juros, lucro sem juros, pagamento misto, comprovante, cancelamento e devolução | Sim |

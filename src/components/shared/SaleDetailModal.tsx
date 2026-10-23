@@ -5,12 +5,13 @@
 // ============================================================================
 
 import React, { useState } from 'react';
-import { ShoppingBag, X, FileText, ExternalLink, Trash2 } from 'lucide-react';
+import { ShoppingBag, X, FileText, ExternalLink, Trash2, FileDown, ShieldCheck } from 'lucide-react';
 import { store } from '../../lib/store';
 import { useAuth } from '../../context/AuthContext';
 import { Sale, DeviceStatus } from '../../types';
 import { SaleDocumentsMenu } from './SaleDocumentsMenu';
-import { SALE_DOCUMENTS, getSaleContext, runDocumentAction } from '../../lib/pdf/saleDocuments';
+import { saleHasAppleWarranty } from '../../lib/pdf/appleWarrantyPDF';
+import { SALE_DOCUMENTS, appleWarrantyDocumentFor, getSaleContext, receiptDocumentFor, runDocumentAction } from '../../lib/pdf/saleDocuments';
 import { navigateTo } from '../../lib/navIntent';
 import { CDC_NOTICE, WARRANTY_STATUS_META, formatDay, getDaysRemaining, getWarrantyStatus } from '../../lib/warrantyStatus';
 import { InspectionSummary } from './InspectionSummary';
@@ -505,7 +506,7 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
                       ? ` · ciência registrada em ${dateTime(sale.apple_warranty.acknowledged_at)} por ${userName(sale.apple_warranty.acknowledged_by) || 'vendedor'}`
                       : ' · ciência não marcada'}
                   </span>
-                  <span className="block text-[11px] text-slate-500">O termo completo está no PDF "Comprovante de Venda — Lacrado + Garantia Apple" (Documentos da Venda).</span>
+                  <span className="block text-[11px] text-slate-500">O termo completo está no PDF "Termo de Garantia Apple" (botão Baixar Garantia ou Documentos da Venda).</span>
                 </div>
               )}
               {warranties.map((w) => {
@@ -570,6 +571,22 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
         <div className="shrink-0 border-t border-slate-100 bg-white px-6 py-4 space-y-2">
           {notice && <p className="text-[11px] font-semibold text-slate-500">{notice}</p>}
           <div className="flex flex-wrap items-center justify-end gap-2">
+            {/* iPhone lacrado: comprovante e Termo de Garantia Apple em PDFs separados, um botão para cada */}
+            {currentTenant && saleHasAppleWarranty(sale) && (['receipt', 'warranty'] as const).map(kind => (
+              <button
+                key={kind}
+                type="button"
+                onClick={async () => {
+                  const ctx = getSaleContext(sale, currentTenant, currentTheme);
+                  const def = kind === 'receipt' ? receiptDocumentFor(ctx) : appleWarrantyDocumentFor(ctx);
+                  if (def) setNotice(await runDocumentAction(def, ctx, 'download'));
+                }}
+                className="px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 font-semibold text-[11px] hover:bg-slate-50 inline-flex items-center gap-1.5"
+              >
+                {kind === 'receipt' ? <FileDown className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                {kind === 'receipt' ? 'Baixar Comprovante' : 'Baixar Garantia'}
+              </button>
+            ))}
             <SaleDocumentsMenu sale={sale} placement="up" onNotice={setNotice} />
             {onDelete && !cancelled && (isAdmin || sale.seller_id === currentUser.id) && (
               <button

@@ -307,7 +307,7 @@ export const POSSale: React.FC<{ onNavigate: (v: string) => void }> = ({ onNavig
         <p className="text-xs text-slate-500 font-medium max-w-md mx-auto">
           O estoque foi baixado automaticamente. {(finishedSale.items as SaleItem[] | undefined)?.some(i => i.device_type === 'lacrado')
             ? ((finishedSale as Sale).apple_warranty
-              ? 'O comprovante do aparelho lacrado, com o Termo de Garantia Apple (1 ano) completo, foi gerado e baixado'
+              ? 'O comprovante do aparelho lacrado e o Termo de Garantia Apple (1 ano) foram gerados e baixados, em dois PDFs'
               : 'O comprovante do aparelho lacrado foi gerado e baixado')
             : 'O Termo de Garantia foi gerado e baixado'}; os demais documentos estão em "Documentos da Venda".
         </p>

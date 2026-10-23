@@ -1,6 +1,6 @@
 // Termo de Garantia Apple (1 ano) na venda de aparelho Apple lacrado: registro na venda (termo, versão,
-// apresentação e ciência), PDF único com o comprovante + o texto integral do termo, seminovo e outras
-// marcas sem o termo, e nada a mais em estoque ou financeiro.
+// apresentação e ciência), dois PDFs independentes (comprovante e termo com o texto integral), seminovo e
+// outras marcas sem o termo, vendas antigas recuperáveis e nada a mais em estoque ou financeiro.
 // Uso: sh scripts/qa/rodar.sh banco-garantia-apple
 import './shim';
 import { ADMIN_EMAIL, SELLER_EMAIL, PASSWORD } from './contas';
@@ -8,7 +8,7 @@ import { store } from '../../src/lib/store';
 import { supabase } from '../../src/lib/supabase';
 import { loadRealIdentity } from '../../src/lib/realSession';
 import { syncTenantRecords } from '../../src/lib/realData';
-import { getAvailableDocuments, getAutomaticDocuments, getSaleContext, SALE_DOCUMENTS } from '../../src/lib/pdf/saleDocuments';
+import { appleWarrantyDocumentFor, getAvailableDocuments, getAutomaticDocuments, getSaleContext, receiptDocumentFor, SALE_DOCUMENTS } from '../../src/lib/pdf/saleDocuments';
 import { APPLE_WARRANTY_CURRENT, APPLE_WARRANTY_TERM_ID } from '../../src/lib/appleWarranty';
 import { apagarDocumentosDoTeste, avisoHistorico } from './limpeza';
 import { vistoriaCompleta } from './vistoria';
@@ -52,7 +52,7 @@ const pdfText = (sale: Sale, docId: string) => {
   const built = SALE_DOCUMENTS.find(d => d.id === docId)!.build(ctx);
   const raw = Buffer.from(built.doc.output('arraybuffer')).toString('latin1');
   const text = [...raw.matchAll(/\(((?:\\.|[^\\)])*)\)\s*Tj/g)].map(m => m[1].replace(/\\([()\\])/g, '$1')).join(' ');
-  return { text: norm(text), pages: built.doc.getNumberOfPages(), hasAppendix: Boolean(built.appendix) };
+  return { text: norm(text), pages: built.doc.getNumberOfPages(), fileName: built.fileName };
 };
 const norm = (t: string) => t.replace(/[“”\x93\x94]/g, '"').replace(/\x97/g, '—').replace(/\x96/g, '–').replace(/\s+/g, ' ').trim();
 // rodapé das páginas do termo: na extração ele cai no meio do parágrafo que continua na página seguinte
@@ -81,7 +81,7 @@ const sApple = store.finalizeSale({ ...base, totalAmount: 8000, items: [item(dAp
 const aw = sApple.apple_warranty;
 check('venda do iPhone lacrado registra o termo Apple (id, versão, item, apresentação e ciência do vendedor)',
   aw?.term_id === APPLE_WARRANTY_TERM_ID && aw.version === APPLE_WARRANTY_CURRENT.version && aw.sale_item_ids[0] === sApple.items![0].id &&
-  aw.presented_by === SELLER_ID && aw.acknowledged_by === SELLER_ID && Boolean(aw.acknowledged_at) && aw.document === 'receipt-sealed', JSON.stringify(aw));
+  aw.presented_by === SELLER_ID && aw.acknowledged_by === SELLER_ID && Boolean(aw.acknowledged_at) && aw.document === 'apple-warranty', JSON.stringify(aw));
 check('venda concluída normalmente: valores e estoque como sempre (um movimento de venda, sem duplicar)',
   sApple.total_amount === 8000 && sApple.gross_profit === 2000 && store.devices.find(d => d.id === dApple.id)?.status === 'sold' &&
   store.deviceMovements.length - movesBefore === 1, `movimentos +${store.deviceMovements.length - movesBefore}`);
@@ -114,24 +114,42 @@ const fromDb = store.sales.find(s => s.id === sApple.id)!;
 check('banco: registro do termo preservado com a versão exata', ok && fromDb.apple_warranty?.version === APPLE_WARRANTY_CURRENT.version && fromDb.apple_warranty?.acknowledged_by === SELLER_ID);
 const ctx = getSaleContext(fromDb, store.tenants.find(t => t.id === T)!, store.themes[T]);
 const docs = getAvailableDocuments(ctx);
-check('histórico: "Comprovante de Venda — Lacrado + Garantia Apple" disponível e baixado automaticamente na venda',
-  docs.some(d => d.id === 'receipt-sealed' && d.label.includes('Garantia Apple')) && getAutomaticDocuments(ctx).some(d => d.id === 'receipt-sealed'), docs.map(d => d.label).join(' | '));
+const ctxOf = (sale: Sale) => getSaleContext(sale, store.tenants.find(t => t.id === T)!, store.themes[T]);
+check('histórico: comprovante e "Termo de Garantia Apple" como documentos separados, os dois baixados ao concluir a venda',
+  docs.some(d => d.id === 'receipt-sealed' && d.label === 'Comprovante de Venda — Lacrado') && docs.some(d => d.id === 'apple-warranty' && d.label === 'Termo de Garantia Apple') &&
+  ['receipt-sealed', 'apple-warranty'].every(id => getAutomaticDocuments(ctx).some(d => d.id === id)), docs.map(d => d.label).join(' | '));
+check('botões do histórico: "Baixar Comprovante" e "Baixar Garantia" apontam cada um para o seu PDF',
+  receiptDocumentFor(ctx)?.id === 'receipt-sealed' && appleWarrantyDocumentFor(ctx)?.id === 'apple-warranty');
 
-// 5: PDF único com o comprovante + o termo integral
-const pdf = pdfText(fromDb, 'receipt-sealed');
-check('PDF: parte 1 é o comprovante de sempre', /COMPROVANTE/i.test(pdf.text) && pdf.text.includes(String(fromDb.sale_number)), pdf.text.slice(0, 200));
-check('PDF: identificação da venda e do aparelho no termo (modelo, capacidade, cor, IMEI, cliente, vendedor, versão)',
-  [dApple.model, '256GB', 'Titânio Preto', dApple.imei, cust.name, SELLER_NAME, `versão ${APPLE_WARRANTY_CURRENT.version}`].every(t => pdf.text.includes(t)), pdf.text.slice(0, 600));
+// PDF 1: só o comprovante, como antes
+const receipt = pdfText(fromDb, 'receipt-sealed');
+check('PDF do comprovante: só o comprovante de sempre, sem nenhuma página do termo',
+  /COMPROVANTE DE VENDA/i.test(receipt.text) && receipt.text.includes(String(fromDb.sale_number)) && receipt.pages === 1 &&
+  !receipt.text.includes('Garantia Limitada de um (1) ano') && !/Garantia Apple — Venda/.test(receipt.text), `páginas ${receipt.pages}`);
+
+// PDF 2: só o termo, completo
+const pdf = pdfText(fromDb, 'apple-warranty');
+check(`PDF da garantia: arquivo próprio (${pdf.fileName}), sem o comprovante`,
+  pdf.fileName === `Garantia_Apple_Venda_${fromDb.sale_number}.pdf` && pdf.fileName !== receipt.fileName && !/COMPROVANTE DE VENDA/i.test(pdf.text) && pdf.text.includes('Termo de Garantia — Apple'));
+check('PDF da garantia: identificação da venda, do cliente e do aparelho (modelo, capacidade, cor, IMEI, vendedor, versão, ciência)',
+  [String(fromDb.sale_number), dApple.model, '256GB', 'Titânio Preto', dApple.imei, cust.name, SELLER_NAME, `versão ${APPLE_WARRANTY_CURRENT.version}`, 'Ciência registrada'].every(t => pdf.text.includes(t)), pdf.text.slice(0, 600));
 const missing = APPLE_WARRANTY_CURRENT.sections.flatMap(s => [s.heading || '', ...s.paragraphs]).filter(Boolean).filter(p => !pdf.text.replace(FOOTER, '').replace(/\s+/g, ' ').includes(norm(p)));
-check(`PDF: texto integral do termo (${APPLE_WARRANTY_CURRENT.sections.length} seções, todos os parágrafos, itens (a) a (j) e endereços de suporte)`,
+check(`PDF da garantia: texto integral (${APPLE_WARRANTY_CURRENT.sections.length} seções, todos os parágrafos, itens (a) a (j) e endereços de suporte)`,
   missing.length === 0 && pdf.text.includes(norm(APPLE_WARRANTY_CURRENT.title)) && pdf.text.includes(norm(APPLE_WARRANTY_CURRENT.subtitle)),
   `faltando ${missing.length}: ${missing.slice(0, 2).map(m => m.slice(0, 80)).join(' | ')}`);
-check('PDF: páginas adicionais numeradas e anexo também para o modelo próprio da loja',
-  pdf.pages >= 3 && /Garantia Apple — Venda nº \d+ — Página 1 de \d+/.test(pdf.text) && pdf.hasAppendix, `páginas ${pdf.pages}`);
-const pdfUsed = SALE_DOCUMENTS.find(d => d.id === 'receipt-sealed')!.isAvailable(getSaleContext(store.sales.find(s => s.id === sUsed.id)!, store.tenants.find(t => t.id === T)!, store.themes[T]));
-const pdfSamsung = pdfText(store.sales.find(s => s.id === sSamsung.id)!, 'receipt-sealed');
+check('PDF da garantia: páginas numeradas', pdf.pages >= 3 && /Garantia Apple — Venda nº \d+ — Página 1 de \d+/.test(pdf.text), `páginas ${pdf.pages}`);
+
+const usedCtx = ctxOf(store.sales.find(s => s.id === sUsed.id)!);
+const samsungCtx = ctxOf(store.sales.find(s => s.id === sSamsung.id)!);
 check('seminovo segue só com o Termo de Garantia de sempre; lacrado de outra marca sem o termo Apple',
-  !pdfUsed && !pdfSamsung.text.includes('Garantia Limitada de um (1) ano') && !pdfSamsung.hasAppendix);
+  !appleWarrantyDocumentFor(usedCtx) && getAvailableDocuments(usedCtx).some(d => d.id === 'warranty-term') && !appleWarrantyDocumentFor(samsungCtx) &&
+  !pdfText(store.sales.find(s => s.id === sSamsung.id)!, 'receipt-sealed').text.includes('Garantia Limitada de um (1) ano'));
+
+// venda antiga de iPhone lacrado (sem o registro do termo): o termo pode ser recuperado, sem dizer que foi apresentado
+const oldSale = { ...fromDb, apple_warranty: undefined } as Sale;
+const oldPdf = pdfText(oldSale, 'apple-warranty');
+check('venda antiga de iPhone lacrado: termo recuperável, informando que foi emitido depois da venda',
+  Boolean(appleWarrantyDocumentFor(ctxOf(oldSale))) && oldPdf.text.includes('Termo emitido em') && !oldPdf.text.includes('Ciência registrada'));
 
 // ---- limpeza
 const dlt = await apagarDocumentosDoTeste(T, STARTED_AT, [...created, cust.id, TAG]);

@@ -16,11 +16,6 @@ export interface BuiltDocument {
    * que o sistema escreve no fim do modelo, mesmo que a loja não tenha previsto campo para eles.
    */
   template?: { tenantId: string; type: TenantDocumentType; values: TemplateValues; footer?: string[] };
-  /**
-   * Páginas que acompanham o documento no mesmo arquivo (ex.: Termo de Garantia Apple do lacrado).
-   * No layout padrão elas já estão em `doc`; com o modelo da loja, são juntadas ao fim do modelo.
-   */
-  appendix?: () => jsPDF;
 }
 
 export type DocumentAction = 'view' | 'download' | 'print' | 'whatsapp' | 'email';
@@ -49,18 +44,9 @@ const usesTenantTemplate = (built: BuiltDocument) =>
 async function renderCustom(built: BuiltDocument, autoPrint = false): Promise<Blob | null> {
   if (!built.template || !usesTenantTemplate(built)) return null;
   try {
-    const blob = await renderTenantTemplate(built.template.tenantId, built.template.type, built.template.values, {
-      autoPrint: autoPrint && !built.appendix, footer: built.template.footer
+    return await renderTenantTemplate(built.template.tenantId, built.template.type, built.template.values, {
+      autoPrint, footer: built.template.footer
     });
-    if (!blob || !built.appendix) return blob;
-    // modelo da loja + páginas anexas, num único PDF
-    const { PDFDocument } = await import('pdf-lib');
-    const merged = await PDFDocument.load(await blob.arrayBuffer());
-    const extra = await PDFDocument.load(built.appendix().output('arraybuffer'));
-    (await merged.copyPages(extra, extra.getPageIndices())).forEach(page => merged.addPage(page));
-    if (autoPrint) merged.addJavaScript('print', 'this.print(true);');
-    const out = await merged.save();
-    return new Blob([out.buffer as ArrayBuffer], { type: 'application/pdf' });
   } catch (err) {
     console.warn('Modelo da loja indisponível; documento gerado no layout padrão.', err);
     return null;

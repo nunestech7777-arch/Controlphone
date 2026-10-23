@@ -302,7 +302,7 @@ export interface SaleAppleWarranty {
   term_id: string;
   version: string;
   title: string;
-  /** Documento em que o termo vai anexado (comprovante de lacrado) */
+  /** Documento da venda que traz o termo ("apple-warranty"; vendas de antes da separação: "receipt-sealed") */
   document: string;
   sale_item_ids: string[];
   presented_at: string;

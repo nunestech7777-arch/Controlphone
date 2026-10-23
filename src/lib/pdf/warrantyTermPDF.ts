@@ -199,7 +199,7 @@ function drawTerm(doc: jsPDF, ctx: WarrantyTermContext, entry: WarrantyTermEntry
   doc.setTextColor(20, 20, 20);
 
   // Cabeçalho: logo proporcional (quando houver), título e identificação da venda
-  drawProportionalLogo(doc, theme?.logo_url, {
+  drawProportionalLogo(doc, theme?.logo_url || theme?.logo_compact_url, {
     x: LEFT,
     y: 11,
     maxWidth: 34,
