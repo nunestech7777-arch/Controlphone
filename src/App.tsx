@@ -17,6 +17,7 @@ import { UsersManagement } from './pages/super-admin/UsersManagement';
 // Telas do Administrador da Loja
 import { AdminDashboard } from './pages/admin/AdminDashboard';
 import { InventoryManagement } from './pages/admin/InventoryManagement';
+import { ArchivedHistories } from './pages/admin/ArchivedHistories';
 import { SuppliersManagement } from './pages/admin/SuppliersManagement';
 import { WarrantiesManagement } from './pages/admin/WarrantiesManagement';
 import { ReturnsManagement } from './pages/admin/ReturnsManagement';
@@ -135,6 +136,8 @@ const MainRouter: React.FC = () => {
           return <AuditLogsView />;
         case 'admin-audit':
           return <AuditLogsView />;
+        case 'admin-archives':
+          return <ArchivedHistories />;
         case 'wholesale':
           return <Suspense fallback={null}><WholesaleApp /></Suspense>;
         default:

@@ -24,6 +24,7 @@ import { FeatureChecklist, Field, PasswordField, PlanDraft, PlanFields, TextFiel
 import { BrandDraft, BrandIdentityForm, brandDraftOf } from './BrandIdentityForm';
 import { DocumentSlot, TenantDocumentsForm } from './TenantDocumentsForm';
 import { TenantBackupsTab } from './TenantBackupsTab';
+import { TenantResetSection } from './TenantResetSection';
 
 export type TenantDetailTab = 'overview' | 'users' | 'brand' | 'documents' | 'plan' | 'features' | 'backups';
 
@@ -539,6 +540,7 @@ export const TenantDetailModal: React.FC<TenantDetailModalProps> = ({ tenantId, 
           Salvar configurações
         </button>
       </div>
+      <TenantResetSection tenant={tenant} />
     </div>
   );
 

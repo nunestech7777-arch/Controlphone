@@ -19,6 +19,7 @@ import {
   Boxes,
   RotateCcw,
   UserCheck,
+  Archive,
   X
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
@@ -55,6 +56,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpe
         { id: 'wholesale', label: 'Atacado', icon: Boxes },
         { id: 'admin-team', label: 'Equipe da Loja', icon: UserCheck },
         { id: 'admin-audit', label: 'Histórico Atividades', icon: History },
+        { id: 'admin-archives', label: 'Históricos Arquivados', icon: Archive },
       ];
     }
 
@@ -81,6 +83,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, isOpe
           { id: 'wholesale', label: 'Atacado', icon: Boxes },
           { id: 'admin-team', label: 'Equipe da Loja', icon: UserCheck },
           { id: 'admin-audit', label: 'Histórico Atividades', icon: History },
+          { id: 'admin-archives', label: 'Históricos Arquivados', icon: Archive },
         ];
 
       case 'seller':

@@ -19,6 +19,9 @@ Testes que exercitam o motor de dados do app (`src/lib/store.ts`) fora do navega
 | `banco-editar-acessorio.ts` | Edição de acessório e brinde (quantidade, custo, preço e fornecedor) e correção da compra no fornecedor | Sim |
 | `banco-vistoria.ts` | Vistoria do seminovo na venda: obrigatória no seminovo, ausente no lacrado, gravada com o IMEI e marcada com X no Termo de Garantia | Sim |
 | `banco-cadastro-lote.ts` | Cadastro em lote: um registro por IMEI, custo individual, tudo ou nada, IMEI repetido, reenvio sem duplicar, colar IMEIs, venda de 1 unidade, sem grade (**exige a migration 25**) | Sim |
+| `reset-banco-local.ts` | Reset Geral da Loja num Postgres local com todas as migrations: permissões, pagamento pendente/recusado/confirmado, falha no arquivamento, reset com e sem arquivamento, comprovantes preservados, isolamento entre lojas, aparelho com cópia antiga e pedido repetido | Não |
+| `documentos-preservados.ts` | PDFs (comprovante, garantia Apple, Termo de Garantia) gerados a partir da cópia preservada no reset, com o estoque já zerado | Não |
+| `ciclo-local.ts` | O aplicativo descarta a cópia local de um ciclo encerrado ao entrar | Não |
 | `banco-garantia-apple.ts` | Termo de Garantia Apple (1 ano) do lacrado: registro na venda (versão e ciência), dois PDFs separados (comprovante sem o termo; termo com o texto integral conferido parágrafo a parágrafo), botões Baixar Comprovante/Baixar Garantia, venda antiga recuperável, seminovo e outras marcas sem o termo | Sim |
 | `banco-lixeira.ts` | Lixeira de vendas canceladas: mover, restaurar (continua cancelada), excluir definitivamente, sem mexer em estoque/financeiro/metas, auditoria e proteção no banco (**exige a migration 26**) | Sim |
 | `banco-exclusao-venda.ts` | Excluir Venda (exclusão lógica): indicadores, estoque por situação do aparelho, estorno, garantia, auditoria e proteção no banco (**exige a migration 24**) | Sim |
@@ -48,6 +51,9 @@ sh scripts/qa/rodar.sh banco-exclusao-venda
 sh scripts/qa/rodar.sh banco-cadastro-lote
 sh scripts/qa/rodar.sh banco-lixeira
 sh scripts/qa/rodar.sh banco-garantia-apple
+sh scripts/qa/rodar.sh reset-banco-local
+sh scripts/qa/rodar.sh documentos-preservados
+sh scripts/qa/rodar.sh ciclo-local
 node scripts/qa/banco-regras-de-acesso.mjs "$QA_SELLER_EMAIL"
 ```
 

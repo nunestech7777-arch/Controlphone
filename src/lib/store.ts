@@ -21,6 +21,7 @@ import {
   pushWholesaleSellerAccess, registerDevicesBatchOnServer, removeDocument, reserveNumbers
 } from './realSync';
 import { BatchUnit, MAX_BATCH, parseBRL, unitErrors } from './deviceBatch';
+import { fetchActiveCycle } from './resetApi';
 
 export interface AssistanceResult {
   ok: boolean;
@@ -75,6 +76,8 @@ export interface RealIdentity {
   profiles: UserProfile[];
   tenantSettings: Record<string, TenantSettings>;
   tenantDocuments: TenantDocument[];
+  /** Ciclo operacional ativo da loja (Reset Geral, migration 27); ausente na loja nunca reiniciada */
+  cycle?: { id: string; number: number } | null;
 }
 
 export interface OpResult<T = undefined> {
@@ -866,6 +869,20 @@ class ControlphoneStore {
     this.isRealMode = true;
     this.storageKey = `${STORAGE_KEY}_real_${identity.scope}`;
     this.resetCollections(false);
+    // Reset Geral: a cópia deste navegador é de um ciclo encerrado da loja → descartada, nada é reenviado
+    this.activeCycleId = identity.cycle?.id || null;
+    this.cycleCheckedAt = Date.now();
+    if (identity.cycle) {
+      try {
+        const saved = localStorage.getItem(this.storageKey);
+        const savedCycle = saved ? (JSON.parse(saved).cycleId as string | undefined) : undefined;
+        if (saved && savedCycle !== identity.cycle.id && (savedCycle || identity.cycle.number > 1)) {
+          localStorage.removeItem(this.storageKey);
+        }
+      } catch {
+        // sem acesso ao armazenamento: segue com o que o servidor mandar
+      }
+    }
     this.loadFromStorage();
 
     // Fotos ainda são guardadas neste navegador: preserva a que já foi escolhida aqui
@@ -1261,6 +1278,7 @@ class ControlphoneStore {
     const syncCursors = Object.fromEntries(
       Object.entries(this.syncCursors).filter(([key]) => !trim.some(kind => key.endsWith(':' + kind))));
     return {
+      cycleId: this.activeCycleId || undefined,
       tenants: this.tenants,
       themes: this.themes,
       profiles: this.profiles,
@@ -1633,11 +1651,39 @@ class ControlphoneStore {
   }
 
   // Envia a fila ao servidor, um tipo por vez na ordem das dependências
+  // --- CICLO OPERACIONAL (Reset Geral da Loja) ---
+  activeCycleId: string | null = null;
+  private cycleCheckedAt = 0;
+  /** Verdadeiro depois que a loja foi reiniciada com este navegador aberto: nada mais é enviado */
+  cycleChanged = false;
+
+  /**
+   * Antes de enviar, confere (no máximo a cada 20 s) se a loja continua no mesmo ciclo. Se o Super Admin
+   * reiniciou a loja, a fila e a cópia local são do ciclo encerrado: tudo é descartado e a tela recarrega.
+   */
+  private async cycleStillActive(): Promise<boolean> {
+    if (this.cycleChanged) return false;
+    const tenantScope = this.storageKey.replace(`${STORAGE_KEY}_real_`, '');
+    if (!tenantScope || tenantScope === 'plataforma' || Date.now() - this.cycleCheckedAt < 20_000) return true;
+    this.cycleCheckedAt = Date.now();
+    const current = await fetchActiveCycle();
+    if (!current || current.id === this.activeCycleId || (!this.activeCycleId && current.number <= 1)) {
+      if (current && !this.activeCycleId) this.activeCycleId = current.id;
+      return true;
+    }
+    this.cycleChanged = true;
+    this.unsynced = emptyQueue();
+    try { localStorage.removeItem(this.storageKey); } catch { /* sem armazenamento */ }
+    if (typeof window !== 'undefined' && typeof window.location?.reload === 'function') window.location.reload();
+    return false;
+  }
+
   private runPush(): Promise<boolean> {
     if (!this.isRealMode) return Promise.resolve(true);
     if (this.pushRunning) return this.pushRunning.then(() => (this.hasUnsynced ? this.runPush() : true));
 
     this.pushRunning = (async () => {
+      if (!(await this.cycleStillActive())) return false;
       let allOk = true;
       for (const kind of SYNC_KINDS) {
         const doc = isDocKind(kind);

@@ -9,6 +9,7 @@ import { supabase } from './supabase';
 import { RealIdentity, store } from './store';
 import { Tenant, TenantDocument, TenantSettings, TenantTheme, UserProfile } from '../types';
 import { isTenantOperational } from './tenantSetup';
+import { fetchActiveCycle } from './resetApi';
 
 export type RealIdentityResult =
   | { ok: true; userId: string; identity: RealIdentity }
@@ -39,13 +40,15 @@ export async function loadRealIdentity(userId: string): Promise<RealIdentityResu
   if (me.is_active === false) return { ok: false, error: 'Este usuário está desativado.' };
   if (me.role !== 'super_admin' && !me.tenant_id) return { ok: false, error: 'Seu usuário ainda não está ligado a uma loja.' };
 
-  const [tenantsRes, themesRes, profilesRes, settingsRes, documentsRes, notesRes] = await Promise.all([
+  const [tenantsRes, themesRes, profilesRes, settingsRes, documentsRes, notesRes, cycle] = await Promise.all([
     supabase.from('tenants').select('*').order('created_at', { ascending: false }),
     supabase.from('tenant_themes').select('*'),
     supabase.from('profiles').select('*').order('created_at'),
     supabase.from('tenant_settings').select('*'),
     supabase.from('tenant_documents').select('*'),
-    supabase.from('tenant_internal_notes').select('tenant_id, notes') // só o Super Admin recebe linhas
+    supabase.from('tenant_internal_notes').select('tenant_id, notes'), // só o Super Admin recebe linhas
+    // ciclo operacional ativo (Reset Geral): a cópia local de um ciclo encerrado é descartada
+    me.role === 'super_admin' ? Promise.resolve(null) : fetchActiveCycle()
   ]);
   const failed = tenantsRes.error || themesRes.error || profilesRes.error || settingsRes.error
     || documentsRes.error || notesRes.error;
@@ -89,7 +92,8 @@ export async function loadRealIdentity(userId: string): Promise<RealIdentityResu
       themes,
       profiles,
       tenantSettings,
-      tenantDocuments: (documentsRes.data || []).map(row => clean<TenantDocument>(row))
+      tenantDocuments: (documentsRes.data || []).map(row => clean<TenantDocument>(row)),
+      cycle
     }
   };
 }
