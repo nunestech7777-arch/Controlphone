@@ -90,5 +90,16 @@ check('outra loja não baixa', (await files(ADMIN_B)).every(f => f.name.startsWi
 check('usuário não grava arquivo no bucket', await fails(() => as(db, ADMIN, () => q(`INSERT INTO storage.objects (bucket_id, name) VALUES ('warranty-receipts', $1)`, [`${A}/x.pdf`]))));
 check('usuário não apaga o PDF assinado', await as(db, ADMIN, async () => { try { return (await q(`DELETE FROM storage.objects WHERE bucket_id = 'warranty-receipts' RETURNING id`)).length === 0; } catch { return true; } }));
 
+// ---- Reset Geral e backups (migration 29): o comprovante confirmado é registro histórico permanente
+const inPlan = (await q(`SELECT 'warranty_signatures' = ANY (backup_table_order()) b, 'warranty_signatures' = ANY (reset_operational_tables()) r`))[0];
+check('comprovantes fora do backup e do reset', inPlan.b === false && inPlan.r === false);
+const reset = await as(db, SUPER, async () => {
+  try { return (await q(`SELECT reset_tenant_cycle($1, 'no_archive', 'Loja Alfa', $2) r`, [A, crypto.randomUUID()]))[0].r; }
+  catch (e: any) { return { ok: false, error: e.message }; }
+});
+check('Reset Geral conclui numa loja com comprovante confirmado', reset?.ok === true, JSON.stringify(reset));
+check('comprovante confirmado continua lá depois do reset',
+  (await q(`SELECT status FROM warranty_signatures WHERE id = $1`, [rowA]))[0]?.status === 'signed');
+
 console.log(`\n${pass} OK, ${failN} falharam`);
 if (failN) process.exit(1);
