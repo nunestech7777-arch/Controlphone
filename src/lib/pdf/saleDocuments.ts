@@ -17,6 +17,7 @@ import { saleTemplateValues, serviceOrderTemplateValues } from './templateValues
 import { TenantDocumentType } from '../../types';
 import { saleRevenue } from '../saleFinance';
 import { buildAppleWarrantyDoc, saleHasAppleWarranty } from './appleWarrantyPDF';
+import { sendWarrantyLinkByWhatsApp, usesWarrantySignatureLink } from '../warrantySignature';
 
 export type { BuiltDocument, DocumentAction };
 
@@ -275,6 +276,14 @@ export const appleWarrantyDocumentFor = (ctx: SaleDocContext) =>
 
 /** Executa a ação e devolve uma mensagem curta para a tela (vazia quando não há o que avisar). */
 export async function runDocumentAction(def: SaleDocumentDef, ctx: SaleDocContext, action: DocumentAction): Promise<string> {
+  // Termo de Garantia por WhatsApp: o cliente recebe um link para conferir, rubricar e confirmar
+  // (sem as linhas de assinatura no papel: a rubrica do cliente entra no PDF pelo servidor)
+  if (action === 'whatsapp' && usesWarrantySignatureLink(def.id)) {
+    const built = withSaleTemplate(
+      buildWarrantyTermPDF({ ...ctx, entries: warrantyEntries(ctx.sale), signatureLines: false }), ctx, 'warranty_term'
+    );
+    return sendWarrantyLinkByWhatsApp(built, ctx, def.message(ctx));
+  }
   return runBuiltDocumentAction(def.build(ctx), action, {
     text: def.message(ctx),
     subject: `${def.label} - venda nº ${ctx.sale.sale_number}`,

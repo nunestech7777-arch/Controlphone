@@ -15,6 +15,7 @@ import { SALE_DOCUMENTS, appleWarrantyDocumentFor, getSaleContext, receiptDocume
 import { navigateTo } from '../../lib/navIntent';
 import { CDC_NOTICE, WARRANTY_STATUS_META, formatDay, getDaysRemaining, getWarrantyStatus } from '../../lib/warrantyStatus';
 import { InspectionSummary } from './InspectionSummary';
+import { WarrantyReceiptSection } from './WarrantyReceiptSection';
 import { saleInterest, saleRevenue } from '../../lib/saleFinance';
 
 type DetailTab = 'overview' | 'products' | 'payments' | 'upgrade' | 'warranty' | 'history';
@@ -534,6 +535,7 @@ export const SaleDetailModal: React.FC<SaleDetailModalProps> = ({ sale, onClose,
               {warranties.length === 0 && (
                 <div className="rounded-xl border border-slate-200 p-6 text-center text-slate-400">Nenhuma garantia registrada para esta venda.</div>
               )}
+              {store.isRealMode && <WarrantyReceiptSection sale={sale} onNotice={setNotice} />}
               <div className={boxCls}>
                 <span className={labelCls}>Documentos Vinculados</span>
                 {warranties.length > 0 ? (

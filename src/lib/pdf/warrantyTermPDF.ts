@@ -24,6 +24,8 @@ export interface WarrantyTermContext {
   customer?: Customer;
   sellerName: string;
   entries: WarrantyTermEntry[];
+  /** false: sem as linhas "Assinatura do responsável/cliente" (termo enviado para rubrica digital pelo link) */
+  signatureLines?: boolean;
 }
 
 type Seg = { text: string; bold?: boolean };
@@ -337,6 +339,7 @@ function drawTerm(doc: jsPDF, ctx: WarrantyTermContext, entry: WarrantyTermEntry
   const closing: string[] = doc.splitTextToSize(CLOSING, PAGE_W - LEFT - RIGHT);
   doc.text(closing, LEFT, y);
   y += closing.length * LH + 9;
+  if (ctx.signatureLines === false) return;
   doc.setFont(FONT, 'normal');
   field(doc, 'Assinatura do responsável:', undefined, LEFT, y, right - 8);
   y += 9;
@@ -359,3 +362,17 @@ export const buildWarrantyTermPDF = (ctx: WarrantyTermContext): { doc: jsPDF; fi
 
   return { doc, fileName: `Termo_de_Garantia_Venda_${ctx.sale.sale_number}.pdf` };
 };
+
+/**
+ * Condições do termo em texto corrido (mesma redação do PDF), para a página em que o cliente
+ * confere e rubrica o comprovante recebido pelo WhatsApp.
+ */
+export const warrantyTermConditions = (storeName: string): { title: string; paragraphs: string[] }[] => [
+  { title: '1) Da abrangência e prazo da garantia', paragraphs: SECTION_1.map(segs => segs.map(s => s.text).join(' ')) },
+  { title: '2) Das condições gerais da garantia', paragraphs: [SECTION_2.split('{LOJA}').join(storeName)] },
+  {
+    title: '3) Das excludentes da garantia',
+    paragraphs: ['A garantia não cobre, entre outras hipóteses:', ...EXCLUSIONS.map(([letter, text]) => `${letter} ${text}`)]
+  },
+  { title: 'Aviso', paragraphs: [CLOSING] }
+];

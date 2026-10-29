@@ -128,6 +128,24 @@ export async function runBuiltDocumentAction(
   return `O PDF foi baixado (${built.fileName}). Anexe o arquivo no e-mail que foi aberto.`;
 }
 
+/**
+ * Envia um PDF já pronto pelo WhatsApp, do mesmo jeito que os documentos acima: no celular,
+ * compartilha o arquivo; no computador, baixa o PDF e abre a conversa com a mensagem.
+ */
+export async function sendPdfByWhatsApp(blob: Blob, fileName: string, phone: string | undefined, text: string): Promise<string> {
+  const number = (phone || '').replace(/\D/g, '');
+  if (!number) return 'O cliente não tem telefone ou WhatsApp cadastrado.';
+  if (await shareFile(blob, fileName, text)) return 'Documento enviado para o compartilhamento do aparelho.';
+  saveBlob(blob, fileName);
+  window.open(`https://wa.me/55${number}?text=${encodeURIComponent(text)}`, '_blank');
+  return `O PDF foi baixado (${fileName}). Anexe o arquivo na conversa do WhatsApp que foi aberta.`;
+}
+
+/** O mesmo PDF que as ações acima entregam (modelo da loja, quando houver, ou o layout padrão). */
+export async function renderBuiltDocumentBlob(built: BuiltDocument): Promise<Blob> {
+  return (await renderCustom(built)) || (built.doc.output('blob') as Blob);
+}
+
 const NO_DELIVERY: DocumentDelivery = { text: '', subject: '' };
 
 export const downloadBuiltDocument = (built: BuiltDocument) => runBuiltDocumentAction(built, 'download', NO_DELIVERY);
